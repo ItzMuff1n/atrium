@@ -1,0 +1,40 @@
+# cargo-mutants configuration.
+#
+# Found automatically: cargo-mutants reads `.cargo/mutants.toml` from the
+# directory it is run in, which is the repository root both locally and in CI.
+# Keeping the scope here rather than only in the workflow's command line is
+# deliberate -- a local `cargo mutants` and the weekly CI run have to mean the
+# same thing, the same reason check.yml pins the cargo-deny version and the
+# toolchain file pins the compiler. The workflow still passes the packages
+# explicitly so the scope is visible in the log; the exclusions below apply to
+# both paths.
+
+# The three binary targets are excluded on purpose, and this is the most
+# important line in the file.
+#
+# `cargo mutants` runs `cargo test` after breaking the code. A binary target --
+# a `src/main.rs` -- is compiled for tests but has no test harness of its own,
+# so `cargo test` runs zero tests against it. Every mutant in those files is
+# therefore reported MISSED no matter what the code does, because nothing ever
+# executes it.
+#
+# Measured on 19 Sep 2026: the three main.rs files hold 123 of the 290 mutants
+# in scope, and 122 of those 123 were reported missed. Not one was caught. They
+# are not findings -- they are an artefact of testing binaries that have no
+# tests, and they would have buried the 40 genuinely uncovered mutants in the
+# library code that are the point of this exercise.
+#
+# The underlying fact is real and worth acting on: the CLI argument parsing and
+# dispatch in those files (`flag_value`, `has_flag`, `run_one`, `mode_demo`,
+# the match arms that choose a subcommand) is exercised by nothing, so a
+# mutation that breaks it cannot fail a test. That belongs in a test, not in a
+# weekly issue that repeats it every week. Recording it here and in the report
+# for pipeline part 3; when those files get tests, delete this exclusion and
+# their mutants come back into scope and start being meaningful.
+exclude_globs = ["crates/*/src/main.rs"]
+
+# The default test timeout is 5x the baseline test time with a minimum of 20
+# seconds. The baseline here is about a second, so 20 is the effective floor and
+# it is generous -- a mutation that causes a hang is caught long before this.
+# Set explicitly so the value does not silently track a change in the default.
+minimum_test_timeout = 20
