@@ -16,11 +16,22 @@
 //! - Lexical attacks (NUL bytes, relative paths, empty paths) are rejected
 //!   with per-case reasons before any filesystem call.
 //! - Phase 1b: a path whose target does not exist is ACCEPTED as long as
-//!   its resolved location sits inside the root. The first component that
-//!   canonicalises as not-found switches the rest of the walk to textual
-//!   mode: nothing further is stat-ed, the remainder is normalised
-//!   component by component (`//` collapses, `.` elided, `x/..` removes
-//!   `x`), and a `..` that pops above the root is rejected naming the step.
+//!   its resolved location sits inside the root. A component that does not
+//!   exist is normalised textually (`//` collapses, `.` elided, `x/..`
+//!   removes `x`), and a `..` that would climb above the root is rejected
+//!   naming the step.
+//! - Textual handling applies ONLY to components that genuinely do not
+//!   exist. The walk stays on the filesystem for every component that can be
+//!   reached: an absent component earlier in the path never stops a later one
+//!   from being canonicalised and containment-checked, and a `..` that
+//!   returns the walk to an existing position is resolved against the disk
+//!   again. (Corrected 18 Sep 2026 -- a component that exists on disk is
+//!   always canonicalised and checked, whatever came before it. The earlier
+//!   walk treated the first not-found component as switching the whole
+//!   remainder to textual mode, so a path like `/nope/../NAME`, where NAME
+//!   is a symlink pointing outside the root, reached that symlink without it
+//!   ever being followed. See `tests/regression_textual_escape.rs` and
+//!   docs/STATUS.md.)
 //! - A dangling symlink is still a symlink: its target is what matters,
 //!   whether or not the target exists. A target outside the root rejects,
 //!   whatever the target's existence (ruling K.1a).
@@ -322,15 +333,14 @@ pub fn resolve(root: &Path, virtual_path: &str) -> Result<PathBuf, ResolveError>
     walk(&canon_root, canon_root.clone(), &pieces, &mode, 0).map(|(p, _absent)| p)
 }
 
-/// The two-mode component walk shared by the virtual path and by symlink
-/// targets.
+/// The component walk shared by the virtual path and by symlink targets.
 ///
 /// - `canon_root`: canonical environment root; containment is checked
 ///   against it at every step.
 /// - `base`: the confirmed, canonical position the walk starts from. For
 ///   the virtual path this is the root itself; for a relative symlink
 ///   target it is the link's (canonical) directory; for an absolute target
-///   it is `/`.
+///   it is `/`. `base` exists.
 /// - `pieces`: the components to walk.
 /// - `mode`: how failures are named (virtual steps vs. the symlink).
 /// - `depth`: dangling-symlink recursion depth.
@@ -338,6 +348,29 @@ pub fn resolve(root: &Path, virtual_path: &str) -> Result<PathBuf, ResolveError>
 /// Returns the resolved location and whether any part of it was absent
 /// (informational; the walk accepts absent locations inside the root).
 /// Every returned location is inside `canon_root`.
+///
+/// The walk keeps two things, and the distinction between them is the whole
+/// point:
+///
+/// - `current`, a **confirmed position**: canonical, existing, inside the
+///   root. It is the last component of the path that genuinely exists.
+/// - `pending`, the **absent remainder**: ordinary names, in order, that were
+///   found not to exist directly below `current`. Nothing in `pending` is
+///   ever stat-ed, because nothing in it exists.
+///
+/// A component that exists is therefore always canonicalised and
+/// containment-checked, no matter what came before it in the path. An absent
+/// component earlier on can no longer stop a later one from being followed —
+/// which is exactly the escape this replaced: the first not-found component
+/// used to switch the rest of the walk to text, so a symlink name reached
+/// after it was never followed, and a path like `/nope/../NAME` returned a
+/// location that canonicalised outside the root.
+///
+/// `..` is the one component that can move between the two. Under `pending`
+/// it cancels the last absent name lexically; under a confirmed position it
+/// is handed to the filesystem, so a file followed by `..` reports the
+/// operating system's own ENOTDIR (ruling 2) rather than being normalised
+/// away, and a `..` that would leave the root is refused here.
 fn walk(
     canon_root: &Path,
     base: PathBuf,
@@ -345,12 +378,8 @@ fn walk(
     mode: &ErrMode,
     depth: usize,
 ) -> Result<(PathBuf, bool), ResolveError> {
-    // `current` is the position as spelled so far (pre-canonical).
     let mut current = base;
-    // Textual mode: once Some, the walk has left the filesystem. The stack
-    // is the position as components relative to the canonical root, so an
-    // empty stack is the root and a `..` pop on it is a climb above it.
-    let mut textual: Option<Vec<OsString>> = None;
+    let mut pending: Vec<OsString> = Vec::new();
     // Names the current step for reasons: virtual spellings for the main
     // walk, host spellings for target walks (used only inside reasons).
     let mut walked: Vec<String> = Vec::new();
@@ -361,21 +390,51 @@ fn walk(
         walked.push(comp_os.to_string_lossy().into_owned());
         let step_label = format!("/{}", walked.join("/"));
 
-        if let Some(stack) = textual.as_mut() {
-            // Textual mode: nothing is stat-ed. Normalise lexically.
-            absent_seen = true;
-            if piece.is_parent() {
-                if stack.pop().is_none() {
-                    return Err(mode.above_root(&step_label, canon_root));
+        if piece.is_parent() {
+            if pending.pop().is_some() {
+                // The `..` cancels the last component that does not exist,
+                // lexically. No filesystem call: there was nothing there to
+                // consult.
+                absent_seen = true;
+                continue;
+            }
+            // The `..` applies to the confirmed position, which exists. Ask
+            // the filesystem. A file followed by `..` is ENOTDIR and the
+            // operating system's own reason is reported (ruling 2); a `..`
+            // out of the root is caught by the containment check below.
+            current.push(comp_os);
+            match std::fs::canonicalize(&current) {
+                Ok(canonical) => {
+                    if !canonical.starts_with(canon_root) {
+                        return Err(classify_escape(&current, piece, &walked, &canonical, mode));
+                    }
+                    current = canonical;
                 }
-            } else {
-                stack.push(comp_os.to_os_string());
+                Err(e) => {
+                    let reason = e.to_string();
+                    return Err(if reason.contains("Too many levels of symbolic links") {
+                        mode.symlink_loop(&step_label)
+                    } else {
+                        mode.os_error(&step_label, reason)
+                    });
+                }
             }
             continue;
         }
 
-        // Filesystem mode (Phase 1's walk): append, canonicalise (which
-        // follows symlinks and resolves `..` on disk), verify containment.
+        // An ordinary name below something that does not exist: it cannot
+        // exist either (a path needs its parent), so it is text, and no
+        // symlink can be reached through it.
+        if !pending.is_empty() {
+            absent_seen = true;
+            pending.push(comp_os.to_os_string());
+            continue;
+        }
+
+        // A name directly below the confirmed position: canonicalise it. This
+        // is the step that follows symlinks and re-checks containment, and it
+        // runs for every component that exists on disk, whatever came earlier
+        // in the path.
         current.push(comp_os);
         match std::fs::canonicalize(&current) {
             Ok(canonical) => {
@@ -387,54 +446,27 @@ fn walk(
             Err(e) => match e.kind() {
                 std::io::ErrorKind::NotFound => {
                     absent_seen = true;
-                    if piece.is_parent() {
-                        // `<prefix>/..` failed NotFound: the prefix must be
-                        // a dangling symlink (an ordinary existing directory
-                        // always has a `..`). Resolve the link's target,
-                        // then apply the `..` to it textually. The target
-                        // decides, as for any symlink (requirement 6).
-                        // current is `<link>/..`; the link is current
-                        // without the trailing ".." pushed this iteration.
-                        let mut link = current.clone();
-                        link.pop();
-                        let link_mode = ErrMode::Symlink {
-                            link_virtual: format!("/{}", walked[..walked.len() - 1].join("/")),
-                        };
-                        let target = follow_dangling(canon_root, &link, &link_mode, depth)?;
-                        // Apply this `..` to the target lexically, then
-                        // continue textually from there.
-                        let mut stack = rel_components(canon_root, &target, mode)?;
-                        if stack.pop().is_none() {
-                            return Err(mode.above_root(&step_label, canon_root));
-                        }
-                        current = target;
-                        textual = Some(stack);
-                        continue;
-                    }
                     let is_symlink = std::fs::symlink_metadata(&current)
                         .map(|m| m.file_type().is_symlink())
                         .unwrap_or(false);
                     if is_symlink {
-                        // Dangling symlink: the link exists, its target does
-                        // not. The target is what matters (requirement 6):
-                        // outside the root rejects whether the target exists
-                        // or not; inside the root the resolved target
-                        // location becomes the new position.
+                        // A dangling symlink: the link exists, its target does
+                        // not. The target decides (ruling K.1a) — outside the
+                        // root it is refused whether the target exists or not.
+                        // Inside the root, where the target would sit becomes
+                        // the absent remainder.
                         let link_mode = ErrMode::Symlink {
                             link_virtual: step_label.clone(),
                         };
                         let resolved = follow_dangling(canon_root, &current, &link_mode, depth)?;
-                        let stack = rel_components(canon_root, &resolved, mode)?;
-                        current = resolved;
-                        textual = Some(stack);
-                        continue;
+                        pending = rel_components(canon_root, &resolved, mode)?;
+                        current = canon_root.to_path_buf();
+                    } else {
+                        // An ordinary absent name. The confirmed position does
+                        // not move; the name joins the absent remainder.
+                        pending = rel_components(canon_root, &current, mode)?;
+                        current = canon_root.to_path_buf();
                     }
-                    // Ordinary absent name inside the root: switch to
-                    // textual mode. `current` (position including this
-                    // component) is inside the root because the previous
-                    // canonical position was; derive the stack from it.
-                    let stack = rel_components(canon_root, &current, mode)?;
-                    textual = Some(stack);
                 }
                 _ => {
                     let reason = e.to_string();
@@ -448,15 +480,30 @@ fn walk(
         }
     }
 
-    if let Some(stack) = textual {
-        let mut out = canon_root.to_path_buf();
-        for n in &stack {
+    if !pending.is_empty() {
+        let mut out = current;
+        for n in &pending {
             out.push(n);
         }
-        // Containment is guaranteed by construction (pops are bounded at
-        // the root); assert it anyway, boringly.
-        if !out.starts_with(canon_root) {
-            return Err(mode.escape(&out));
+        // Containment, comparing CANONICAL paths: canonicalise the longest
+        // existing prefix of the result and compare that to the canonical
+        // root. The remainder holds absent names only — every one of them was
+        // found not to exist directly under a position that does exist — so
+        // no symlink can be followed inside it and no `..` can appear in it.
+        let mut probe = out.clone();
+        let existing = loop {
+            match std::fs::canonicalize(&probe) {
+                Ok(c) => break Some(c),
+                Err(_) => {
+                    if !probe.pop() {
+                        break None;
+                    }
+                }
+            }
+        };
+        match existing {
+            Some(canonical) if canonical.starts_with(canon_root) => {}
+            _ => return Err(mode.escape(&out)),
         }
         return Ok((out, absent_seen));
     }

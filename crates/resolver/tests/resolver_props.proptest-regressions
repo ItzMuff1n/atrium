@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 61da91255aa54f4345717826f4b167bbbde2b352be901835ad6e62339593f7d1 # shrinks to case = (TreeSpec { dirs: [], root_files: [], sub_files: [], links: [("jI876", OutsideRelative), ("café", OutsideAbsolute), ("lkvyswfnfgvbqeosjrwrqmhxkhruvsjhrzwlebsdjgvcensawahmheevyztjwmaerwskkcayldvvytruylxanpqkbdxzlbwgjmwjlotgynwilkbizhryvqywtguaguipsqljbkwtbpsldyurjthzarxttmgkqzjjabfqayblqwxmdktifzbmanylmvoissaeizkirrwuyeegjfnpvhleikarlcushkpzzdwiqnlymdasskcapqdqffxkqkzpshjast", OutsideRelative)] }, "/日本語/..//café")

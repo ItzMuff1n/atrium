@@ -2,6 +2,9 @@
 # Atrium Phase 1b — hands-on attack pass (paths that do not exist yet).
 #
 # Runs every line of attack-list-1b.md sections A–M against the resolver,
+# plus section N, the textual-mode escape found on 18 Sep 2026 (which is not
+# in attack-list-1b.md — that file is Phase 1b's frozen record and is not
+# edited); section N is described where it is defined, below,
 # in a throwaway environment root built by the resolver's own `fixtures`
 # mode (which now also creates the dangling-symlink and §M.3 fixtures).
 # Same shape as hand-test.sh.
@@ -49,6 +52,9 @@ if [ ! -L "$ROOT/link-rel-out" ]; then
     exit 2
 fi
 
+# The root as the filesystem sees it, for the containment check above.
+CANON_ROOT="$(realpath -m -- "$ROOT" 2>/dev/null || echo "$ROOT")"
+
 echo "environment root: $ROOT"
 echo
 
@@ -70,11 +76,21 @@ run() {
     if [ "$want" = "A" ] && [ "$verdict" != "ACCEPT" ]; then mark="FAIL"; FAILS=$((FAILS+1)); fi
 
     # Independent containment check: any ACCEPT must sit under the root.
+    #
+    # This compares REAL paths, not spelled ones. A string prefix test says a
+    # path is contained when it BEGINS with the root's spelling, which is what
+    # let the 18 Sep 2026 textual-mode escape through unnoticed: the resolver
+    # returned `<root>/NAME`, whose spelling is under the root and whose real
+    # location is outside it. `realpath` follows the symlinks, so the check
+    # cannot be fooled by a name that merely looks contained.
     if [ "$verdict" = "ACCEPT" ]; then
         ACCEPTS=$((ACCEPTS+1))
-        case "$detail" in
-            "$ROOT"*) : ;;
-            *) mark="FAIL"; FAILS=$((FAILS+1)); echo "  !! ESCAPE FROM ROOT: $detail" ;;
+        local real
+        real="$(realpath -m -- "$detail" 2>/dev/null || echo "$detail")"
+        case "$real" in
+            "$CANON_ROOT"|"$CANON_ROOT"/*) : ;;
+            *) mark="FAIL"; FAILS=$((FAILS+1))
+               echo "  !! ESCAPE FROM ROOT: $detail (really $real)" ;;
         esac
     else
         REJECTS=$((REJECTS+1))
@@ -237,6 +253,41 @@ run M A "/$A255_NAME/../$C255_NAME"
 echo "  -- M.7 depth accounting at 20 levels (balanced accept, off-by-one reject)"
 run M A "$A20/$U20/newfile"
 run M R "$A20/$U21/newfile"
+
+echo
+echo "=== N. the textual-mode escape, found 18 Sep 2026 (expect REJECT) ==="
+echo "  -- An absent component, then \`..\`, then a symlink pointing outside"
+echo "     the root. Before the fix every line below was ACCEPTED, and the"
+echo "     location it returned canonicalised outside the root. The absent"
+echo "     component must not switch checking off for what follows it."
+run N R '/nope/../link-to-etc'
+run N R '/nope/../link-to-home'
+run N R '/nope/../link-to-root'
+run N R '/_/..//link-to-etc'
+run N R '/_///../link-to-etc'
+run N R '//_//../link-to-etc'
+echo "  -- the same shape with the escaping link in the MIDDLE of the path"
+run N R '/nope/../link-to-etc/newfile'
+run N R '/nope/../link-to-etc/passwd'
+run N R '/_/..//good-dir/inner-link/newfile'
+echo "  -- and through a chain that ends outside"
+run N R '/nope/../chain-a'
+run N R '/nope/../chain-a/newfile'
+echo "  -- a dangling outside-pointing link reached the same way (ruling 1 vs"
+echo "     the step rule: the target decides, and this target is outside)"
+run N R '/nope/../link-to-nothing-out'
+run N R '/nope/../link-rel-out'
+echo "  -- deeper absent runs before the same link"
+run N R '/a/b/c/../../../link-to-etc'
+run N R '/nope/deeper/../../../link-to-etc/newfile'
+echo "  -- controls: the same shapes pointing INSIDE must still be ACCEPTED,"
+echo "     and so must ordinary absent paths, or the fix has gone too far"
+run N A '/nope/../newfile'
+run N A '/nope/..'
+run N A '/_/..//newfile'
+run N A '/nope/../home/documents'
+run N A '/nope/../link-to-inside/newfile'
+run N A '/link-to-nothing/..'
 
 echo
 echo "accepts: $ACCEPTS   rejects: $REJECTS"

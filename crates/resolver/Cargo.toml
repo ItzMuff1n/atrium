@@ -4,6 +4,17 @@ version = "0.1.0"
 edition = "2021"
 
 # Dependencies: NONE. std only, by design (brief §8.1).
+#
+# dev-dependencies: one, and it is the repo's FIRST external dependency. It is
+# test-only — it never enters the product build, and `cargo build` for the
+# workspace still resolves to the five Atrium crates and nothing else. It is
+# pinned to an exact version rather than a range so the property tests cannot
+# change behaviour without a deliberate edit here.
+[dev-dependencies]
+# Property-based testing: generates random inputs and shrinks failures to a
+# minimal case. https://github.com/proptest-rs/proptest
+proptest = "=1.11.0"
+
 
 [lib]
 name = "atrium_resolver"
