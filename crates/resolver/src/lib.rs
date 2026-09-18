@@ -678,3 +678,12 @@ fn display_virtual_prev(walked: &[String]) -> String {
     }
     format!("/{}", walked[..walked.len() - 1].join("/"))
 }
+
+/// Temporary probe: deliberately mis-formatted, so `cargo fmt --check` fails.
+/// The argument list is broken across lines where rustfmt requires it on one line.
+fn probe_red_ci(
+    a: i32,
+    b: i32
+) -> i32 {
+    a + b
+}
