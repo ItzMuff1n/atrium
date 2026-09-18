@@ -1,0 +1,13 @@
+# The exact toolchain this project is built and checked with.
+#
+# Pinned, not a range: CI installs whatever this file names, so a range would
+# mean CI and the developer machine could compile different compilers and
+# disagree about whether the code is clean. Recorded from `rustc --version` on
+# the machine the project is developed on:
+#     rustc 1.92.0 (ded5c06cf 2025-12-08)
+#
+# rustfmt and clippy are components rather than separate installs, and
+# scripts/check.sh runs both, so they are requested here instead of assumed.
+[toolchain]
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
