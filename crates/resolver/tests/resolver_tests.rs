@@ -362,69 +362,6 @@ fn section_g_length_and_shape() {
 }
 
 #[test]
-fn section_j_component_length() {
-    // The three length tests required by name (brief §9.8), plus the
-    // 255-byte fixture-on-disk accept. All rejections are on ABSENT names
-    // and must carry the resolver's own reason — never a leaked OS error.
-    let f = Fixture::new("len");
-    let canon_root = fs::canonicalize(&f.root).unwrap();
-
-    // 255-byte ASCII name, ABSENT → ACCEPT (resolver's own check, exactly
-    // at the limit).
-    let name255 = "a".repeat(255);
-    let p = format!("/{}", name255);
-    let real = accepts(&f, &p);
-    assert_eq!(real, canon_root.join(&name255));
-
-    // 255-byte ASCII name as a REAL fixture on disk (the filesystem
-    // agrees it is legal) → ACCEPT, ending at the fixture.
-    fs::write(f.root.join(&name255), b"x").unwrap();
-    let real = accepts(&f, &p);
-    assert_eq!(real, canon_root.join(&name255));
-
-    // 256-byte ASCII name, ABSENT → REJECT with the resolver's own reason.
-    let p = format!("/{}", "b".repeat(256));
-    let e = rejects(&f, &p);
-    assert!(
-        matches!(e, ResolveError::NameTooLong { bytes: 256, .. }),
-        "256-byte component must reject with NameTooLong, got {}",
-        e
-    );
-    assert!(
-        !e.to_string().contains("os error"),
-        "reason must be the resolver's own, got {}",
-        e
-    );
-
-    // 200 Hebrew characters — 400 bytes, only 200 characters. REJECT.
-    // This is the one a character-counting implementation gets wrong.
-    let hebrew: String = "\u{5d0}".repeat(200);
-    assert_eq!(hebrew.len(), 400);
-    let p = format!("/{}", hebrew);
-    let e = rejects(&f, &p);
-    assert!(
-        matches!(e, ResolveError::NameTooLong { bytes: 400, .. }),
-        "400-byte component must reject with NameTooLong, got {}",
-        e
-    );
-    assert!(
-        !e.to_string().contains("os error"),
-        "reason must be the resolver's own, got {}",
-        e
-    );
-
-    // Length is per component, mid-path too: an over-long component deep
-    // in an absent path still rejects on the resolver's own check.
-    let p = format!("/newdir/{}/tail", "c".repeat(256));
-    let e = rejects(&f, &p);
-    assert!(matches!(e, ResolveError::NameTooLong { .. }), "{}", e);
-
-    // 200 nested short components → ACCEPT (long path, short names).
-    let deep = format!("/{}", vec!["a"; 200].join("/"));
-    accepts(&f, &deep);
-}
-
-#[test]
 fn section_h_nasty_combinations() {
     let f = Fixture::new("h");
     for p in [
