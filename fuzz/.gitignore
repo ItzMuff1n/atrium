@@ -1,0 +1,10 @@
+# The fuzz crate's own build output and scratch state.
+#
+# `corpus/` is libFuzzer's working corpus: it grows on every run and is the thing
+# the workflow caches between runs, so it must never be committed. `seeds/` is
+# the opposite -- the small, reviewed starting corpus that IS committed, and the
+# reason it lives elsewhere is so a fuzzing run cannot leave this repo dirty.
+target/
+corpus/
+artifacts/
+coverage/

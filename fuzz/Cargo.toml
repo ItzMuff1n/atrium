@@ -1,0 +1,37 @@
+[package]
+name = "atrium-resolver-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+# This package is deliberately NOT a member of the workspace at the repo root:
+# the root `Cargo.toml` names `fuzz` in its `exclude` list. Fuzzing needs the
+# nightly toolchain, while `rust-toolchain.toml` pins the project to a stable
+# release and is left untouched — so the two must not resolve as one workspace,
+# or a `cargo build` at the root would try to build this package with the pinned
+# stable compiler and fail.
+[workspace]
+
+[dependencies]
+# Pinned to an exact version rather than a range, for the same reason the
+# resolver's proptest is pinned: the fuzzer's own behaviour must not change under
+# the project without a deliberate edit here. Version read from
+# https://crates.io/api/v1/crates/libfuzzer-sys (max stable 0.4.13).
+libfuzzer-sys = "=0.4.13"
+
+# The resolver lives at `crates/resolver`, not at the repo root: `cargo fuzz init`
+# writes `path = ".."` because it assumes the fuzz directory sits beside the crate
+# it fuzzes, and in a workspace that assumption resolves to the root's *virtual*
+# manifest, which is not a package at all. Corrected by hand.
+[dependencies.atrium-resolver]
+path = "../crates/resolver"
+
+[[bin]]
+name = "resolve"
+path = "fuzz_targets/resolve.rs"
+test = false
+doc = false
+bench = false

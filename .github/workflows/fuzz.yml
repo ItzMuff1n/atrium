@@ -1,0 +1,326 @@
+name: fuzz
+
+# Nightly fuzzing of the resolver, plus a manual trigger for ad-hoc runs.
+#
+# ## What this is for
+#
+# The resolver is the sandbox boundary: it decides which real path a virtual path
+# is allowed to reach. The attack lists (`hand-test-1b.sh`) check the attacks
+# someone already thought of. This checks the ones nobody thought of, by handing
+# the resolver random paths all night and asserting two properties that must hold
+# for EVERY input: it never panics, and every accepted path really sits inside the
+# root. See `fuzz/fuzz_targets/resolve.rs` for the oracle and
+# `fuzz/scripts/report-crash.py` for how a crash becomes an issue.
+#
+# ## Why it cannot block anything
+#
+# This is deliberate and is the first thing to check if it is ever suspected of
+# blocking work:
+#
+#   * It does not trigger on `pull_request` or `push` at all -- only `schedule`
+#     and `workflow_dispatch`. It cannot run on a PR, so it cannot fail on one.
+#   * The branch ruleset `main-protection` requires exactly two status checks,
+#     `fmt, build, test, clippy` and `test-guard`. This workflow's job is named
+#     `fuzz`, which is not among them, so even if it were triggered on a PR a red
+#     run would not hold the merge.
+#
+# A run that finds a crash goes red on purpose. The red is the signal; the issue
+# is the report.
+#
+# ## Schedule
+#
+# 03:17 UTC. Two reasons it is not on the hour. GitHub's own documentation says
+# the `schedule` event "can be delayed during periods of high loads", that "high
+# load times include the start of every hour", and that "if the load is
+# sufficiently high enough, some queued jobs may be dropped" -- so a quiet,
+# off-the-hour time is what gets the run to happen at all. And 03:00-05:00 UTC is
+# the quiet window for this repository's own activity (UTC+3 evenings).
+#
+# One caveat worth knowing rather than discovering later: GitHub also documents
+# that "in a public repository, scheduled workflows are automatically disabled
+# when no repository activity has occurred in 60 days". This repository is public.
+# A nightly run that has silently stopped will therefore look identical to a
+# nightly run that keeps finding nothing, so check the Actions tab if the fuzzing
+# output matters and no run has appeared for a while.
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'How many seconds to fuzz'
+        required: false
+        default: '1200'
+        type: string
+
+# `issues: write` is all the token needs: the workflow only reads the repo (the
+# checkout does not need a token) and writes issues. Per GitHub's workflow syntax
+# reference, "if you specify the access for any of these permissions, all of those
+# that are not specified are set to `none`", so this is the whole grant -- there is
+# no `contents: write` here and no other scope widened beyond it.
+permissions:
+  issues: write
+
+jobs:
+  fuzz:
+    name: fuzz
+    runs-on: ubuntu-latest
+
+    steps:
+      # v7.0.1 to match .github/workflows/check.yml (Node 20 is being retired).
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # The pinned stable toolchain from rust-toolchain.toml, which this workflow
+      # deliberately does not touch. `cargo +nightly` below selects nightly
+      # instead; fuzzing needs it for libFuzzer's sanitizer support.
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      # The nightly toolchain and the pinned cargo-fuzz binary are both a lot of
+      # downloading to repeat every night, so both are cached. These two steps
+      # come before the installs below, which is what makes the installs cache
+      # hits rather than rebuilds: restore first, then install (which becomes a
+      # no-op when the cache was warm), then save.
+      #
+      # `restore`/`save` rather than the combined `actions/cache`: that action
+      # saves in a post step and would therefore save under a key of its own
+      # derivation, which is fine, but being explicit keeps the two caches in
+      # this workflow uniform and keeps their keys from ever colliding.
+      - name: Restore the nightly toolchain
+        uses: actions/cache/restore@v6.1.0
+        id: nightly-cache
+        with:
+          path: ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+          # Keyed on the OS alone: any nightly is a usable nightly for this job.
+          # A newer one being available is not a reason to re-download it, so
+          # the key is deliberately not tied to a date.
+          key: nightly-toolchain-${{ runner.os }}
+          restore-keys: |
+            nightly-toolchain-
+
+      # ~/.cargo/bin is what makes the pinned cargo-fuzz install a one-time cost
+      # on the scheduled run, and the registry is what makes the resolver's
+      # dependency build a cache hit. Keyed on the files that would invalidate it
+      # -- the fuzz crate has its own lockfile, because it is not a workspace
+      # member -- so a dependency change is what rebuilds it, not the calendar.
+      # No `runner.os` in the key: this workflow only ever runs on Linux.
+      - name: Restore cargo registry and binaries
+        uses: actions/cache/restore@v6.1.0
+        id: cargo-cache
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: fuzz-cargo-${{ hashFiles('fuzz/Cargo.lock', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-cargo-
+
+      - name: Install nightly, for fuzzing only
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustc +nightly --version
+          rustc --version
+
+      # Pinned to the exact version used locally, for the same reason
+      # check.yml pins cargo-deny: a green local run and a green CI run have to
+      # mean the same thing, and the fuzzer's own behaviour must not change under
+      # the project without an edit here. On a warm ~/.cargo/bin cache this
+      # reports the binary as already installed and exits, so it costs seconds.
+      - name: Install cargo-fuzz (pinned)
+        run: cargo install --locked cargo-fuzz --version 0.13.2
+
+      - name: Show the versions actually in use
+        run: |
+          cargo fuzz --version
+          rustc +nightly --version
+
+      # Saved only when the restore missed: on a warm cache there is nothing new
+      # to store, and a cache key that already exists is immutable anyway. The
+      # toolchain cache has exactly one key and gets written once; the cargo one
+      # is rewritten only when `fuzz/Cargo.lock` changes.
+      - name: Save the nightly toolchain
+        if: steps.nightly-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
+          key: nightly-toolchain-${{ runner.os }}
+
+      - name: Save cargo registry and binaries
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: fuzz-cargo-${{ hashFiles('fuzz/Cargo.lock', 'fuzz/Cargo.toml') }}
+
+      # The seed corpus is committed (`fuzz/seeds/resolve/`), so a cold cache is
+      # still a useful starting point rather than a blank page. `--check` fails
+      # the run if the seeds have gone missing, because a seed corpus that has
+      # been quietly emptied would show up as nothing but a slower fuzzer.
+      - name: Verify the committed seed corpus
+        run: python3 fuzz/scripts/seed_corpus.py --check
+
+      - name: Restore the working corpus
+        uses: actions/cache/restore@v6.1.0
+        with:
+          path: fuzz/corpus/resolve
+          # This primary key deliberately does NOT include the run id that the
+          # save below uses, so it will not match exactly. That is intended: the
+          # corpus is cumulative, and the prefix in `restore-keys` is what brings
+          # back the most recent run's corpus. The `key` here is the key a save
+          # would use if one ever did not carry a run id, and having it means a
+          # cache entry saved under it is preferred over a prefix match.
+          key: fuzz-corpus-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'fuzz/fuzz_targets/resolve.rs', 'fuzz/Cargo.toml') }}
+          restore-keys: |
+            fuzz-corpus-${{ runner.os }}-
+
+      - name: Prepare the corpus directory
+        run: mkdir -p fuzz/corpus/resolve
+
+      # The run. Corpus arguments are ordered deliberately: libFuzzer writes the
+      # new inputs it finds into the FIRST corpus directory and only reads the
+      # rest (verified locally: 3 files -> 109 in the first, unchanged in the
+      # second). So the writable, cache-backed directory is first and the
+      # committed seeds are second, which is what keeps a fuzzing run from
+      # leaving the checkout dirty.
+      #
+      # `continue-on-error` on this step is not to hide the crash: the crash is
+      # captured in the log, the artifacts and the issue below. What it buys is
+      # that a failing fuzzer does not stop the remaining steps from running, so
+      # one crash cannot cost us the corpus as well. The exit status is read from
+      # `outcome` further down, and the last step fails the run with it.
+      - name: Fuzz
+        id: fuzz
+        env:
+          # The default is 1200s; the schedule always uses it, and a manual run
+          # can override it. `github.event.inputs` rather than `inputs` because a
+          # scheduled run supplies neither and one expression has to serve both.
+          DURATION: ${{ github.event.inputs.duration || '1200' }}
+        run: |
+          mkdir -p fuzz/artifacts/resolve
+          # `pipefail` so the status that survives the pipe is the fuzzer's own,
+          # not `tee`'s; `set +e` because Actions runs this with `bash -e`, which
+          # would abort the script at the pipeline before the status is read.
+          # The status is then read from PIPESTATUS and re-raised explicitly: an
+          # `echo` after the pipeline would otherwise leave the step looking
+          # successful, which would silently turn every found crash into a green
+          # run. That is the failure this step is arranged to make impossible.
+          set -o pipefail
+          set +e
+          cargo +nightly fuzz run resolve fuzz/corpus/resolve fuzz/seeds/resolve -- \
+            -max_total_time="${DURATION}" \
+            -print_final_stats=1 \
+            2>&1 | tee fuzz-run.log
+          rc=${PIPESTATUS[0]}
+          echo "fuzz-duration=${DURATION}" >> "$GITHUB_OUTPUT"
+          echo "fuzz-exit=${rc}" >> "$GITHUB_OUTPUT"
+          exit "$rc"
+        # See the note above: the exit status is inspected further down instead.
+        continue-on-error: true
+
+      # `if: always()` because the whole point of keeping the corpus is that it
+      # is the expensive thing to replace. actions/cache@v6.1.0 saves in a post
+      # step gated on `success()`, so a run that finds a crash would otherwise
+      # discard every input it discovered on the way -- exactly the run whose
+      # corpus is most interesting. Explicit restore/save steps are what the
+      # action's own documentation now recommends for this.
+      - name: Save the working corpus
+        if: always()
+        uses: actions/cache/save@v6.1.0
+        with:
+          path: fuzz/corpus/resolve
+          # The run id is part of the key so each run's corpus is kept rather
+          # than colliding with the previous run's entry: caches are immutable,
+          # so a repeated key cannot overwrite. The next run's `restore-keys`
+          # prefix picks up the newest of these, and the corpus keeps growing.
+          key: fuzz-corpus-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'fuzz/fuzz_targets/resolve.rs', 'fuzz/Cargo.toml') }}-${{ github.run_id }}
+        # The corpus is worth saving but not worth failing a clean run over: the
+        # committed seeds mean a lost cache costs time, not coverage. Without
+        # this, a transient cache-service error would show up as a red fuzzing
+        # run that found nothing, which is the one signal this workflow exists to
+        # keep meaningful.
+        continue-on-error: true
+
+      # The crash input libFuzzer wrote. `if-no-files-found: warn` because the
+      # directory is created either way, and the interesting case -- a run that
+      # fails without leaving an artifact -- should not turn into a second,
+      # noisier failure that buries the first.
+      - name: Upload the crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: fuzz-crash-${{ github.run_number }}
+          path: fuzz/artifacts/resolve/
+          # libFuzzer's crash filenames do not start with a dot, but the
+          # directory itself can hold dotfiles; uploading them costs nothing and
+          # this is evidence, so nothing is silently excluded.
+          include-hidden-files: true
+          retention-days: 90
+          if-no-files-found: warn
+
+      # The log, which carries the panic message and the input in printable form.
+      - name: Upload the run log
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: fuzz-log-${{ github.run_number }}
+          path: fuzz-run.log
+          if-no-files-found: warn
+
+      # Files (or comments on) the issue, deduplicating by panic message. Runs on
+      # failure only: a clean run has nothing to report. It minimizes the input
+      # with `cargo fuzz tmin` first, so the report reproduces in seconds.
+      - name: Report the crash as an issue
+        id: report
+        if: always() && steps.fuzz.outcome == 'failure'
+        run: |
+          python3 fuzz/scripts/report-crash.py \
+            --artifacts fuzz/artifacts/resolve \
+            --duration "${{ github.event.inputs.duration || '1200' }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --log fuzz-run.log
+
+      # A crash means the fuzzer did its job; a run that finds nothing means the
+      # gate is not being exercised. Both are worth seeing on the run summary,
+      # because the failure mode of a fuzzer is silence.
+      - name: Summarise the run
+        if: always()
+        run: |
+          {
+            echo "## Fuzzing run"
+            echo
+            echo "- duration: ${{ github.event.inputs.duration || '1200' }}s"
+            echo "- trigger: ${{ github.event_name }}"
+            echo "- corpus files after the run: $(find fuzz/corpus/resolve -type f 2>/dev/null | wc -l)"
+            echo "- committed seed files: $(find fuzz/seeds/resolve -type f 2>/dev/null | wc -l)"
+            echo "- crash artifacts: $(find fuzz/artifacts/resolve -type f 2>/dev/null | wc -l)"
+            if [ -f issue-status.txt ]; then
+              echo "- issue: $(cat issue-status.txt)"
+            fi
+            if [ -f created-issue-url.txt ]; then
+              echo "- issue URL: $(cat created-issue-url.txt)"
+            fi
+            echo
+            echo 'Last lines of the run:'
+            echo
+            echo '```'
+            tail -n 20 fuzz-run.log 2>/dev/null || echo "(no log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Fail the run if the fuzzer found something. The artifacts are uploaded
+      # and the issue is filed by this point, so failing here costs nothing and
+      # keeps a crash visible instead of hiding it behind `|| true`.
+      - name: Fail the run if a crash was found
+        if: always() && steps.fuzz.outcome == 'failure'
+        run: |
+          echo "The fuzzer found a crash. See the issue and the uploaded artifacts."
+          exit 1
