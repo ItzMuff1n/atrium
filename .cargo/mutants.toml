@@ -33,6 +33,82 @@
 # their mutants come back into scope and start being meaningful.
 exclude_globs = ["crates/*/src/main.rs"]
 
+# Three mutants are excluded BY NAME, and each reason below is the exact one.
+# Every reason was established by running something, not by reading.
+#
+# The patterns are deliberately not keyed to a line number. An earlier draft
+# used `file:line:col` prefixes and it failed in exactly the way this whole
+# exercise exists to catch: editing `crates/shell/src/lib.rs` to delete a dead
+# arm shifted the lines below it, two patterns silently stopped matching, and
+# the only visible symptom was a mutant count that was 2 higher than expected
+# (37 instead of 35). A mutation exclusion that rots on the next edit is worse
+# than none, because the number still looks plausible. So each pattern anchors
+# on the file plus the mutation's own wording, and each was checked for
+# uniqueness against the full 166-mutant workspace list.
+#
+# `exclude_re` is matched against the mutant's full name, so `^...$` anchors the
+# whole name and a regex that matches one name and no other excludes exactly one
+# mutant and leaves its neighbours in scope.
+#
+# 307:19 -- `replace match guard e.kind() == NotFound with true in run`.
+#   UNKILLABLE, and not equivalent -- the distinction matters, so it is spelled
+#   out. The mutation only matters if a non-NotFound error can reach that match
+#   arm. No caller-controlled input can: five routes were probed on 19 Sep 2026
+#   and every one was rejected upstream by the resolver or by spawn itself,
+#   never reaching the guard --
+#       cwd chmod 000            -> Spawn{reason:"Permission denied (os error 13)"}
+#       cwd under unreadable dir -> Rejected(OsError "Permission denied ...")
+#       cwd through a regular file -> Rejected(OsError "Not a directory (os error 20)")
+#       dangling symlink         -> CwdMissing
+#       symlink loop             -> Rejected(SymlinkLoop)
+#   The only input that separates the mutation from the real code is a
+#   filesystem race -- the entry changing between `resolve()` and
+#   `symlink_metadata` -- which no deterministic test can produce. That is why
+#   this one is recorded rather than tested: there is no test to write.
+#   The sibling mutation at the same site (`with false`) IS in scope and IS
+#   caught, because it breaks the CwdMissing path. So the guard's real behaviour
+#   stays tested; only the unreachable direction is skipped.
+#
+#   Note the `NotFound with true` wording is NOT unique to shell: fileops has
+#   six and resolver has one (`create_dir`, `write_file`, `read_file`,
+#   `list_dir`, `move_path`, `delete_path`, `resolve_from`). Those are different
+#   mutants with their own coverage and must keep it, so the pattern is anchored
+#   to `crates/shell/src/lib.rs` and to `in run`.
+#
+# 391:48 -- `delete - in run`, the `ExitStatus::Exited(-1)` fallback inside
+#   `#[cfg(not(unix))]`. NOT COMPILED -- a third category, neither equivalent
+#   nor dead-in-the-ordinary-sense, so it is named as such rather than forced
+#   into a box it does not fit.
+#   `rustc --print cfg` includes `unix` on the only target installed
+#   (`rustup target list --installed` = `x86_64-unknown-linux-gnu` alone), every
+#   workflow runs on ubuntu-latest, and the shell test target uses
+#   `std::os::unix` unconditionally -- so this arm cannot be compiled here, let
+#   alone tested, and it cannot even be compile-checked for the platform it is
+#   written for. No test can kill a mutant in code the compiler discards, and it
+#   cannot be proven unused by building, because building never reaches it. That
+#   is the exact reason it is excluded instead of deleted.
+#
+#   Its unix-side sibling was NOT excluded -- it was DELETED, because running
+#   proved it unreachable: a SIGSTOPped child gave `try_wait -> Ok(None)`, so a
+#   status that is reported at all carries a code or a signal. That arm is now
+#   `unreachable!()`, which generates no mutant to exclude. See
+#   crates/shell/src/lib.rs.
+#
+# 503:31 -- `replace < with <= in read_capped`. EQUIVALENT, and this one is
+#   genuinely provable by reading the two branches: at `kept.len() == cap`,
+#   `room = 0`, so `extend_from_slice(&buf[..n.min(0)])` appends nothing,
+#   `n > room` sets `truncated = true`, and the else-branch sets
+#   `truncated = true`. Same bytes, same flag, same return. Nothing observable
+#   differs, which is why the mutation survives a suite that tests the cap at
+#   its boundary (N.10: `cap-1`, `cap`, `cap+1`). The mutants at 504:36 and
+#   506:26 -- the `-` and the `n > room` comparison inside that branch -- are in
+#   scope and caught.
+exclude_re = [
+    "^crates/shell/src/lib\\.rs:.*: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in run$",
+    "^crates/shell/src/lib\\.rs:.*: delete - in run$",
+    "^crates/shell/src/lib\\.rs:.*: replace < with <= in read_capped$",
+]
+
 # The default test timeout is 5x the baseline test time with a minimum of 20
 # seconds. The baseline here is about a second, so 20 is the effective floor and
 # it is generous -- a mutation that causes a hang is caught long before this.

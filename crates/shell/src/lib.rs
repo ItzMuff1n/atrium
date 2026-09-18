@@ -359,13 +359,35 @@ pub fn run(
                             use std::os::unix::process::ExitStatusExt;
                             match s.signal() {
                                 Some(sig) => ExitStatus::Signalled(sig),
-                                // A wait-status with neither code nor signal
-                                // does not occur on unix; treat it plainly.
-                                None => ExitStatus::Exited(-1),
+                                // A wait-status with neither code nor signal does
+                                // not occur on unix, and this is now enforced
+                                // rather than assumed. `try_wait` waits with
+                                // WNOHANG and no WUNTRACED/WCONTINUED, so a
+                                // stopped or continued child is never reported
+                                // here -- probed 19 Sep 2026: a SIGSTOPped child
+                                // gave `Ok(None)`, not a status. Every status that
+                                // IS reported therefore carries a code or a
+                                // signal. The previous fallback here returned
+                                // `Exited(-1)`, a fabricated exit code that no
+                                // process can produce and that `Display` would
+                                // print as "exit -1" -- a lie in the one place
+                                // (attack-list-2b.md §C.6) the whole point is
+                                // telling a crash from a success. Unreachable is
+                                // the honest answer.
+                                None => unreachable!(
+                                    "a wait-status on unix carries an exit code or a signal"
+                                ),
                             }
                         }
                         #[cfg(not(unix))]
                         {
+                            // Unreachable for the same reason, on a platform this
+                            // project does not build or test: all CI runs on
+                            // ubuntu-latest, and the test target uses
+                            // `std::os::unix` unconditionally. Kept as a value
+                            // rather than `unreachable!()` because this arm is not
+                            // compiled here and so cannot be verified by running
+                            // anything -- see `.cargo/mutants.toml`.
                             ExitStatus::Exited(-1)
                         }
                     }
