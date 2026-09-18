@@ -117,7 +117,7 @@ project and can be revoked.
 
 **This is the Phase 1 sign-off. The gate is passed.**
 
-**What Muffin ran:** `resolver/hand-test.sh` — the full attack list, sections
+**What Muffin ran:** `crates/resolver/hand-test.sh` — the full attack list, sections
 A–I, 91 lines against a throwaway environment root. His result: **24 accepts,
 67 rejects, zero failures.**
 
@@ -151,7 +151,7 @@ stopped the project** — there was none.
 
 **This is the Phase 1b sign-off. The gate is passed.**
 
-**What Muffin ran:** `resolver/hand-test-1b.sh` — the full Phase 1b attack list,
+**What Muffin ran:** `crates/resolver/hand-test-1b.sh` — the full Phase 1b attack list,
 sections A–M, 92 lines against a throwaway environment root. His result, quoted
 from chat: **`accepts: 43   rejects: 49`** and
 **`hand-test-1b: every line behaved as required`** (exit 0). The final line only
@@ -192,7 +192,7 @@ now create files. **Phase 2 is unblocked and is the next build.**
 
 **This is the Phase 2a sign-off. The gate is passed.**
 
-**What Muffin ran:** `fileops/hand-test-2a.sh` — the Phase 2a attack list, 64
+**What Muffin ran:** `crates/fileops/hand-test-2a.sh` — the Phase 2a attack list, 64
 lines against a throwaway environment root and a separate outside directory. His
 result, quoted from chat: **`lines run: 64   failures: 0`** and
 **`hand-test-2a: every line behaved as required`** (exit 0).
@@ -283,7 +283,7 @@ and gates the agent loop.**
 
 **This is the Phase 2b sign-off. The gate is passed.**
 
-**What Muffin ran:** `shell/hand-test-2b.sh` — the Phase 2b attack list, 78 lines
+**What Muffin ran:** `crates/shell/hand-test-2b.sh` — the Phase 2b attack list, 78 lines
 against a throwaway environment root and a separate outside directory. His
 result, quoted from chat, verbatim:
 
@@ -351,7 +351,7 @@ autonomous — nothing runs on its own before undo exists.
 
 **This is the Phase 2c sign-off. The gate is passed.**
 
-**What Muffin ran:** `snapshot/hand-test-2c.sh` — the Phase 2c attack list, 111
+**What Muffin ran:** `crates/snapshot/hand-test-2c.sh` — the Phase 2c attack list, 111
 lines against a throwaway environment root, a store outside it, and a separate
 outside directory. His result, quoted from chat, verbatim:
 
@@ -539,7 +539,7 @@ Removed from config Sep 2026. Full evidence in `pipeline-check.md` §5.
 signed off. The gate below is Muffin's to run. Full command-by-command evidence is
 in `phase-2d-evidence.txt`.
 
-**What it is.** A new crate `watcher/` (binary `atrium-watcher`). It watches the
+**What it is.** A new crate `crates/watcher/` (binary `atrium-watcher`). It watches the
 environment root and reports what changed inside it, so the live view cannot go
 stale when a real command changes files behind Atrium's own file-operation layer
 (`DESIGN.md` §3.3). `watch` prints one record per change; `demo` runs a
@@ -566,7 +566,7 @@ deliberately, and that boundary is pinned by a test rather than left to drift.
 - `cargo fmt --check` → clean. `cargo build` → exit 0, no warnings.
 - `cargo test` → **42 passed, 0 failed** (32 attack-list tests + 10 blind-list
   mechanisms).
-- `bash watcher/hand-test-2d.sh` → **rc 0, 16 lines, 0 failures, 0 outside touches,
+- `bash crates/watcher/hand-test-2d.sh` → **rc 0, 16 lines, 0 failures, 0 outside touches,
   0 root disappearances, 0 real-path leaks.**
 - **20 consecutive full-suite runs, 0 failures.** Before the fix in the paragraph
   below the suite failed **3 times in 22 runs** — so the flake was real, and its
@@ -661,27 +661,27 @@ three records, and collapsing them would lose two.
   deliberately **not** built (`attack-list-2d.md` §L.2).
 - **Linux only**, via inotify. No portability requirement in v1.
 - **The tool is not agent-facing**, and is deliberately not routed through the
-  resolver: it takes real host paths, as `snapshot/` does.
+  resolver: it takes real host paths, as `crates/snapshot/` does.
 
 **Not done, on purpose:** no cage (2e), no gate (Phase 4), no effects / SQLite / log
-(Phase 3), no UI, no agent loop (Phase 5). Nothing touched outside `watcher/` plus
+(Phase 3), no UI, no agent loop (Phase 5). Nothing touched outside `crates/watcher/` plus
 this STATUS append, `attack-list-2d.md`, `blind-attack-list-2d.md`,
 `delegation-briefs/phase-2d-watcher.md`, `phase-2d-evidence.txt`, `BUILD-PLAN.md`
 and `DECISIONS.md`.
 
-**One thing Muffin needs to do, and it is not a test.** `watcher/.hermes/
+**One thing Muffin needs to do, and it is not a test.** `crates/watcher/.hermes/
 environment.json` **was not written** — the write was blocked by the
 agent-instruction-file guard and the approval prompt timed out, which is not consent,
 so it was not retried or routed around. Consequence: `hermes verify` needs
 `--skip-start` for this crate instead of returning `ok: true` bare. The fix is one
-file, copied from `snapshot/.hermes/environment.json` with the name changed. It is
+file, copied from `crates/snapshot/.hermes/environment.json` with the name changed. It is
 cosmetic for a CLI with no server (`HANDOFF.md` §5), and it is listed here rather
 than worked around.
 
 **Muffin's gate — the only thing that signs this off:**
 
 ```
-cd "/home/muffin/Desktop/Nexus project/watcher" && bash hand-test-2d.sh
+cd "/home/muffin/VibeCodeProjects/atrium/crates/watcher" && bash hand-test-2d.sh
 ```
 
 Expect the last two lines `lines run: 16   failures: 0`, `outside touches: 0   root
@@ -692,7 +692,7 @@ line, or a non-zero exit means it is not holding. §I of the harness prints stat
 
 ### Phase 2c — snapshot and restore: built in-session by the parent, because the last two build children died at the cap (14 Sep 2026, Hermes session)
 
-> **Superseded, later on 14 Sep 2026: Muffin ran `snapshot/hand-test-2c.sh`
+> **Superseded, later on 14 Sep 2026: Muffin ran `crates/snapshot/hand-test-2c.sh`
 > himself and Phase 2c is SIGNED OFF — see "Verified hands-on" above. This entry is
 > left as written because it was the state when it was written. Its "NOT signed
 > off" line is no longer current.**
@@ -701,7 +701,7 @@ line, or a non-zero exit means it is not holding. §I of the harness prints stat
 signed off. The gate below is Muffin's to run. Full command-by-command evidence is
 in `phase-2c-evidence.txt`.
 
-**What it is.** A new crate `snapshot/` (binary `atrium-snapshot`). `snapshot
+**What it is.** A new crate `crates/snapshot/` (binary `atrium-snapshot`). `snapshot
 create` copies the whole environment root into a **store outside it**; `snapshot
 restore` puts the root back and removes anything created since; `snapshot list`
 shows what is restorable. The undo `DESIGN.md` §3.4 promised. The spec of record is
@@ -724,7 +724,7 @@ relayed from a child, because there was none.
   against the published NIST vectors first: empty, `abc`, the 448-bit and 896-bit
   padding boundaries, and one million `a`, plus **70 combinations** proving the
   streaming path agrees with the one-shot path. All pass.
-- `bash snapshot/hand-test-2c.sh` → **rc 0, 111 lines, 0 failures**, with three
+- `bash crates/snapshot/hand-test-2c.sh` → **rc 0, 111 lines, 0 failures**, with three
   independent checks running alongside the lines and able to fail the run
   regardless of what the program printed about itself: the outside directory and
   the host `/etc/passwd` unchanged, the store unchanged by any refusal, and the
@@ -825,20 +825,20 @@ tree. **It found defect 2 above.** Unverifiable limit, stated: the contamination
 check proves the child read no project files; it does not prove the model had no
 prior knowledge of Atrium. Same caveat as the earlier blind lists.
 
-**Frozen files and records untouched (observed, by mtime).** `resolver/`,
-`fileops/`, `shell/` sources all predate this phase's work, as do
+**Frozen files and records untouched (observed, by mtime).** `crates/resolver/`,
+`crates/fileops/`, `crates/shell/` sources all predate this phase's work, as do
 `attack-list.md`, `attack-list-1b.md`, `attack-list-2a.md`, `attack-list-2b.md` and
-`resolver/hand-test.sh`. No instrumentation and no negative-test markers left in
-`snapshot/src/` or its tests or harness (greps return 0).
+`crates/resolver/hand-test.sh`. No instrumentation and no negative-test markers left in
+`crates/snapshot/src/` or its tests or harness (greps return 0).
 
 **Not done, on purpose:** no copy-on-write (see `DECISIONS.md`; the root's
 filesystem is 2e's unmade decision and a tmpfs cannot reflink at all — observed
 "Operation not supported"), no cage (2e), no automation (Phase 5), nothing
-touched outside `snapshot/` plus this STATUS append, `attack-list-2c.md` and the
+touched outside `crates/snapshot/` plus this STATUS append, `attack-list-2c.md` and the
 BUILD-PLAN banner.
 
 **Muffin's gate — the only thing that signs this off:**
-`cd "/home/muffin/Desktop/Nexus project/snapshot" && bash hand-test-2c.sh`
+`cd "/home/muffin/VibeCodeProjects/atrium/crates/snapshot" && bash hand-test-2c.sh`
 Expect the last line `lines run: 111   failures: 0   holes demonstrated (expected,
 2e's): 0` and `hand-test-2c: every line behaved as required`, exit 0. Any `[FAIL]`
 line, any `!!` line, or a non-zero exit means it is not holding. Sections H and I
@@ -847,7 +847,7 @@ checking anything.
 
 ### Phase 2b — the real shell: built by a subagent that timed out; finished, corrected and verified by the parent session (14 Sep 2026, Hermes session)
 
-> **Superseded, later on 14 Sep 2026: Muffin ran `shell/hand-test-2b.sh` himself
+> **Superseded, later on 14 Sep 2026: Muffin ran `crates/shell/hand-test-2b.sh` himself
 > and Phase 2b is SIGNED OFF — see "Verified hands-on" above. This entry is left
 > as written because it was the state when it was written. Its "NOT signed off"
 > line is no longer current.**
@@ -856,7 +856,7 @@ checking anything.
 signed off. The gate below is Muffin's to run. Full command-by-command evidence
 is in `phase-2b-evidence.txt`.
 
-**What happened.** A new crate `shell/` was built for Phase 2b from
+**What happened.** A new crate `crates/shell/` was built for Phase 2b from
 `delegation-briefs/phase-2b-shell.md`, whose spec is `attack-list-2b.md` (written
 *before* the code, as Phases 1b and 2a were). Build and blind-list were
 dispatched together (`deleg_3ca1b68b` build, `deleg_ade9c6f9` blind). **The build
@@ -865,10 +865,10 @@ its own harness, `README.md` never written. Its files were complete enough to
 build. **Nothing it claimed is evidence**; this entry records only what the
 parent re-ran afterwards.
 
-**Built by the child (files on disk):** `shell/{Cargo.toml, src/lib.rs,
+**Built by the child (files on disk):** `crates/shell/{Cargo.toml, src/lib.rs,
 src/main.rs, tests/shell_tests.rs, hand-test-2b.sh, README.md,
 .hermes/environment.json}`. One dependency, by path, on our own `atrium-resolver`
-— no external crate, `std` only otherwise. `resolver/` and `fileops/` untouched
+— no external crate, `std` only otherwise. `crates/resolver/` and `crates/fileops/` untouched
 (mtimes unchanged).
 
 **What it does, and the honest scope of it.** Runs a real command with its
@@ -887,7 +887,7 @@ letting a green run imply a sandbox.
 - `cargo build` → exit 0.
 - `cargo test` → **45 passed, 0 failed** (36 from the child + 9 added below).
 - `hermes verify --json` → `ok: true`.
-- `bash shell/hand-test-2b.sh` → **rc 0, 78 lines, 0 failures, 5 holes
+- `bash crates/shell/hand-test-2b.sh` → **rc 0, 78 lines, 0 failures, 5 holes
   demonstrated**; the outside directory and the host `/etc/passwd` unchanged
   across the whole run (checked after every line, by looking at the disk).
 
@@ -1007,7 +1007,7 @@ unprivileged; Landlock is compiled **and active** (`/sys/kernel/security/lsm`);
 podman and docker are installed. Recorded so 2e does not have to re-probe.
 
 **Not done:** no shell code, no brief, no attack list for 2b or 2e. No delegation
-dispatched. `fileops/` and `resolver/` code untouched by this pass.
+dispatched. `crates/fileops/` and `crates/resolver/` code untouched by this pass.
 
 **Uncertain:**
 
@@ -1033,7 +1033,7 @@ signed off. The gate below is Muffin's to run.
 > "Verified hands-on". This paragraph is left as written because it was true when
 > written: nothing in this entry, and no agent's re-run, could have been the gate.)*
 
-**What happened.** A new crate `fileops/` was built for Phase 2a from
+**What happened.** A new crate `crates/fileops/` was built for Phase 2a from
 `delegation-briefs/phase-2a-file-operations.md`, whose spec is
 `attack-list-2a.md` (written *before* the code, as Phase 1b's was). Build and
 blind-list were dispatched together as `deleg_f8c377a6` (kimi-k3). **The build
@@ -1043,10 +1043,10 @@ weekly usage limit (HTTP 429 on `requ3gge`, "weekly usage limit reached",
 Its files were complete enough to build, but **nothing it claimed is evidence**;
 this entry records only what the parent re-ran afterwards.
 
-**Built by the child (files on disk):** `fileops/{Cargo.toml, src/lib.rs,
+**Built by the child (files on disk):** `crates/fileops/{Cargo.toml, src/lib.rs,
 src/main.rs, tests/fileops_tests.rs, hand-test-2a.sh, README.md,
 .hermes/environment.json}`. One dependency, by path, on our own `atrium-resolver`
-— no external crate. `resolver/` untouched (mtimes unchanged: `src/lib.rs`
+— no external crate. `crates/resolver/` untouched (mtimes unchanged: `src/lib.rs`
 2026-09-11 21:43:20).
 
 **Parent verification, all observed 14 Sep 2026** (real output, not summary):
@@ -1055,7 +1055,7 @@ src/main.rs, tests/fileops_tests.rs, hand-test-2a.sh, README.md,
 - `cargo test` → **56 passed, 0 failed** (55 from the child; the 56th is the
   regression guard added below). Includes the §E.1 recursive-delete test and the
   §E.2 loop test.
-- `bash fileops/hand-test-2a.sh` → **rc=0, 64 lines, 0 failures, "every line
+- `bash crates/fileops/hand-test-2a.sh` → **rc=0, 64 lines, 0 failures, "every line
   behaved as required"**; outside-directory listing and sentinel checksum
   unchanged; host `/etc/passwd` checksum and mtime unchanged.
 - **Parent's own spot attacks** (`/tmp/spot-2a.sh`, `/tmp/blind-2a-probe.sh`):
@@ -1112,7 +1112,7 @@ src/main.rs, tests/fileops_tests.rs, hand-test-2a.sh, README.md,
 **What Muffin should run by hand (the gate for 2a — but see the note below):**
 
 ```
-cd "/home/muffin/Desktop/Nexus project/fileops" && bash hand-test-2a.sh
+cd "/home/muffin/VibeCodeProjects/atrium/crates/fileops" && bash hand-test-2a.sh
 ```
 
 Watch each line; the run exits non-zero on any `FAIL`, any `!! OUTSIDE TOUCHED`,
@@ -1194,12 +1194,12 @@ here, not in the child):
   accept. New tests `section_j_component_length` and `phase1b_attack_list`.
 
 **Changed by this session, 13 Sep 2026:**
-- `resolver/src/main.rs` — `link-rel-out` added to the fixture set: a **relative
+- `crates/resolver/src/main.rs` — `link-rel-out` added to the fixture set: a **relative
   symlink target** (`../../outside`) that climbs above the root, required by
   `attack-list-1b.md` §M.3. A relative target is resolved against the link's own
   directory, so the traversal never appears in the requested path; absolute
   fixtures could not test it.
-- `resolver/hand-test-1b.sh` — extended to run every §M line in the existing
+- `crates/resolver/hand-test-1b.sh` — extended to run every §M line in the existing
   shape (path, verdict, an independent containment check on every ACCEPT, and a
   fail on any reason that cites mere absence). Now 92 lines.
 - `DECISIONS.md` / `attack-list-1b.md` edits by the Claude session were **read
@@ -1271,7 +1271,7 @@ in chat. The entry says so explicitly, so nobody later reads it as an agent
 promoting its own work.
 
 **Not done:** nothing else in STATUS was touched. No code was run or changed in
-this pass; `resolver/` is untouched (`src/lib.rs` still at its 11 Sep 21:43
+this pass; `crates/resolver/` is untouched (`src/lib.rs` still at its 11 Sep 21:43
 mtime, no session markers).
 
 **Uncertain:** none. This entry records the user's own report of a pass he ran
@@ -1325,7 +1325,7 @@ skill copies.
 
 **Not run:** nothing in this pass touched code, and no build, test, demo or
 `hermes verify` run was performed. **The resolver and its tests are untouched** —
-`src/lib.rs` still has its 11 Sep 21:43 mtime and no `resolver/` file was opened
+`src/lib.rs` still has its 11 Sep 21:43 mtime and no `crates/resolver/` file was opened
 for writing in this pass.
 
 ### Project-wide consistency sweep (Sep 2026, Hermes session)
@@ -1348,8 +1348,8 @@ code:**
 | 7 | `HANDOFF.md` §1: "Phase 1 and Phase 1b still need verification" — Phase 1b does not exist | Corrected |
 | 8 | `HANDOFF.md` §5: `hermes verify` note said "use `--skip-start`" — a recipe fix now makes it pass unflagged | Added, with the caveat that it is per-project |
 | 9 | `hermes-recon.md`: undated, asserted `glm-5.3` as current, contradicting STATUS.md | Dated banner added; marked stale; STATUS.md named the single home |
-| 10 | `resolver/README.md` test description did not mention the NUL gap | Gap recorded |
-| 11 | `resolver/tests`: four of the five moved lines tested, one not; comments stale | All five now tested |
+| 10 | `crates/resolver/README.md` test description did not mention the NUL gap | Gap recorded |
+| 11 | `crates/resolver/tests`: four of the five moved lines tested, one not; comments stale | All five now tested |
 
 **Also fixed, same class but not contradictions:** the delegation brief's status
 line said "APPROVED for dispatch … when the user says go" after it had been
@@ -1386,20 +1386,20 @@ above are what this session observed at the time and are left as its record —
   line removed from section G (it was listed as reject there and accept in I).
   A limitation note added to section F: the three NUL lines cannot be passed
   through the command-line harness at all.
-- `resolver/src/main.rs` — the demo's five "informational" spec-conflict lines
+- `crates/resolver/src/main.rs` — the demo's five "informational" spec-conflict lines
   are now real section-I pass/fail cases; the informational loop and its
   comment block deleted. `/` removed from the G reject list.
 - `blind-attack-list.md` — created. The §12 blind list existed only in
   `/tmp/blind.json` and a delegation cache file; both are outside the project
   and `/tmp` does not survive a reboot. Copied in verbatim.
-- `resolver/hand-test.sh`, `resolver/probe-parent.sh`,
-  `resolver/probe-blind.sh` — created. Run the whole list, the parent's own
+- `crates/resolver/hand-test.sh`, `crates/resolver/probe-parent.sh`,
+  `crates/resolver/probe-blind.sh` — created. Run the whole list, the parent's own
   list, and the blind list respectively.
 - `phase-1-hands-on.md` — created. Step-by-step for Muffin, with what counts as
   working and what counts as broken.
 - `phase-1-evidence.txt` — created. Every check, its verbatim output, and what
   each result means.
-- `resolver/.hermes/environment.json` — created. The verification recipe.
+- `crates/resolver/.hermes/environment.json` — created. The verification recipe.
   `start` is `null`: `atrium-resolver` is a command-line tool with no server,
   and the auto-detector's guess of `cargo run` made every `hermes verify` run
   report failure on a readiness poll for a web server that does not exist.
@@ -1443,7 +1443,7 @@ working and what counts as broken.
 
 ### Phase 1 resolver built by delegated subagent (kimi-k3); independently verified by the parent (Sep 2026)
 
-Phase 1 (`resolver/`, crate `atrium-resolver`, std-only, lib + bin) was built by
+Phase 1 (`crates/resolver/`, crate `atrium-resolver`, std-only, lib + bin) was built by
 a delegated subagent per `delegation-briefs/phase-1-path-resolution.md`. The
 parent then verified it itself — did not trust the child's report.
 
@@ -1568,11 +1568,11 @@ missing from non-goals entirely.
 
 **Not done (as of that moment — see the Superseded note immediately below):**
 Phase 1 is NOT started. Dispatch waits only on Phase 0 completing (0c passing)
-per BUILD-PLAN rule 2. No code exists in `resolver/` — the directory does not
+per BUILD-PLAN rule 2. No code exists in `crates/resolver/` — the directory does not
 exist yet.
 
 *Superseded 11 Sep 2026:* the paragraph above was true when written. Phase 1
-has since been dispatched and built (`deleg_7b0c9983`); `resolver/` exists and
+has since been dispatched and built (`deleg_7b0c9983`); `crates/resolver/` exists and
 is verified agent-side. The parent overrode the "wait for 0c" ordering — see
 HANDOFF.md §7, "Amended 11 Sep 2026", for the reasoning. This entry is kept as
 written because it is a record of that session's state at that moment.
@@ -1767,22 +1767,22 @@ Neither was ever a blocker for Phase 1 sign-off.
   `OPEN-QUESTIONS.md` are complete and current as of the design session that
   produced them.
 - **Phase 1's resolver is built and SIGNED OFF HANDS-ON by Muffin on 13 Sep
-  2026** (`resolver/`, crate `atrium-resolver`). The gate is passed; see
+  2026** (`crates/resolver/`, crate `atrium-resolver`). The gate is passed; see
   "Verified hands-on".
 - **Phase 1b — non-existent-path resolution — is built and SIGNED OFF HANDS-ON
   by Muffin on 13 Sep 2026.** Its own phase, with its own attack list written
   before the code. The gate is passed; see "Verified hands-on".
 - **Phase 2a — file operations — is built and SIGNED OFF HANDS-ON by Muffin on
-  14 Sep 2026** (`fileops/`, crate `atrium-fileops`). Its own harness, 64 lines,
+  14 Sep 2026** (`crates/fileops/`, crate `atrium-fileops`). Its own harness, 64 lines,
   zero failures. The gate is passed; see "Verified hands-on".
 - **Phase 2b — the real shell — is SIGNED OFF HANDS-ON by Muffin on 14 Sep 2026**
-  (`shell/`, crate `atrium-shell`). Its own harness, 78 lines, zero failures, 5
+  (`crates/shell/`, crate `atrium-shell`). Its own harness, 78 lines, zero failures, 5
   holes demonstrated on purpose. The gate is passed; see "Verified hands-on".
 - **Phase 2c — snapshot and restore — is SIGNED OFF HANDS-ON by Muffin on 14 Sep
-  2026** (`snapshot/`, crate `atrium-snapshot`). Its own harness, 111 lines, zero
+  2026** (`crates/snapshot/`, crate `atrium-snapshot`). Its own harness, 111 lines, zero
   failures, 0 holes. **The undo exists**, so "nothing autonomous runs before undo
   exists" is satisfied. The gate is passed; see "Verified hands-on".
-- **Four crates now: `resolver/`, `fileops/`, `shell/`, `snapshot/` — all signed
+- **Four crates now: `crates/resolver/`, `crates/fileops/`, `crates/shell/`, `crates/snapshot/` — all signed
   off.** Each separate so a signed-off thing cannot gain unverified code.
 - **Phase 2e — strong confinement for `run commands` — is required, after 2d and
   before Phase 5.** "Working directory confined" is not confinement; a real

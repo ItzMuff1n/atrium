@@ -121,7 +121,7 @@ Three decisions worth knowing before changing anything:
 ## Verifying it
 
 ```
-cd "/home/muffin/Desktop/Nexus project/snapshot"
+cd "/home/muffin/VibeCodeProjects/atrium/crates/snapshot"
 bash hand-test-2c.sh
 ```
 

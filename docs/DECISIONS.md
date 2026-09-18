@@ -675,7 +675,7 @@ imports code and a supply chain nobody in this project reviews — the user does
 read code, so a third-party crate is unverifiable by the only gate this project
 has. A path reference to a crate sitting in this repository adds nothing new to
 review, downloads nothing, and pins no version. It is a pointer to code that is
-already here and, in `resolver/`'s case, already verified hands-on by Muffin.
+already here and, in `crates/resolver/`'s case, already verified hands-on by Muffin.
 
 **The first use was a brief precedent; this makes it a decision.** Phase 2a's
 brief §14.2 said the reading should be recorded in `DECISIONS.md` "not left as a
@@ -685,12 +685,12 @@ mistake a third-party crate for the same case.
 
 **The boundary, stated so it cannot be stretched.** This covers **path
 dependencies on crates in this repository, and nothing else.** Any dependency
-fetched from a registry or git remote is still a stop-and-ask. `shell/` is
+fetched from a registry or git remote is still a stop-and-ask. `crates/shell/` is
 `std`-only plus this one path reference; if a future phase believes it needs a
 real crate, that is a stop-and-ask with the reasoning written down.
 
 **Also decided with it:** a new crate must **not** depend on `atrium-fileops`.
-`fileops/` is signed off hands-on by Muffin (14 Sep 2026) for one job, and a
+`crates/fileops/` is signed off hands-on by Muffin (14 Sep 2026) for one job, and a
 second crate depending on its binary or its library would give a verified artifact
 a second failure mode. Code sharing that matters should be lifted into a crate
 with its own verification — not borrowed sideways from a signed-off one.
@@ -719,8 +719,8 @@ requirement, and its text is quoted verbatim in the new plan section.
 SKILL.md keeps its frontmatter; its body is one instruction — read the source
 document at its absolute path and treat that file as the authority.
 
-- `atrium` → `/home/muffin/Desktop/Nexus project/AGENT-RULES.md`
-- `muffin-style` → `/home/muffin/Desktop/Nexus project/WORKING-WITH-MUFFIN.md`
+- `atrium` → `/home/muffin/VibeCodeProjects/atrium/docs/AGENT-RULES.md`
+- `muffin-style` → `/home/muffin/VibeCodeProjects/atrium/docs/WORKING-WITH-MUFFIN.md`
 
 **Rejected: keeping the copies and syncing them.** A copy that nothing syncs
 drifts, and it drifts silently — a subagent follows a stale rule set with no
@@ -860,7 +860,7 @@ path — traversable as text, contained at every step. Verified contained by pro
 
 ### The watcher reaches inotify through its own `extern "C"` declarations, and that is not a dependency
 
-**Decision (15 Sep 2026).** `watcher/` declares the three inotify entry points it
+**Decision (15 Sep 2026).** `crates/watcher/` declares the three inotify entry points it
 needs — `inotify_init1`, `inotify_add_watch`, `inotify_rm_watch` — and `read` as
 `extern "C"` symbols in its own source, and calls them directly. `Cargo.toml` has an
 empty `[dependencies]` and stays that way.
@@ -887,13 +887,13 @@ reviews; a declaration of symbols the binary already links imports nothing.
    and it cannot say *which* change happened — only "something differs". This
    phase's entire value is knowing what a command **did**; `DESIGN.md` §6.2 assigns
    exactly that to the watcher and distinguishes it from the `ran` effect, which
-   covers the command and its output. Polling is recorded in `watcher/README.md` as
+   covers the command and its output. Polling is recorded in `crates/watcher/README.md` as
    the known fallback that was not taken.
 
 **The boundary, stated so it cannot be stretched.** This covers **symbols the
 platform's own libc already provides, declared in our source, for a Linux-only
 crate.** Any crate fetched from a registry or git remote is still a stop-and-ask.
-`watcher/` is `std`-only plus these four declarations.
+`crates/watcher/` is `std`-only plus these four declarations.
 
 ### The watcher's reported path is virtual, and the root's real path never appears in the change stream — but does appear in a refusal
 
@@ -902,7 +902,7 @@ crate.** Any crate fetched from a registry or git remote is still a stop-and-ask
 - **The change stream names virtual paths only** — `/home/documents/x.txt`, never
   `<root>/home/documents/x.txt`. `DESIGN.md` §3.1: the agent never learns the real
   path exists. `--show-real` prints real paths and exists for the person reading the
-  tool, the same exception `shell/` makes. This is enforced rather than intended: the
+  tool, the same exception `crates/shell/` makes. This is enforced rather than intended: the
   harness checks **every** line of a run for the root's real path, as bytes, and the
   crate's own `resize`/reconstruction path refuses to build a record from a path
   that is not under the canonical root.
@@ -911,8 +911,8 @@ crate.** Any crate fetched from a registry or git remote is still a stop-and-ask
 
 **Why this is not a contradiction, and the sentence a later session will want to
 "fix".** The two are different audiences with different needs, and this is the
-`snapshot/` precedent arriving in a second crate. `DECISIONS.md` already records it
-for `snapshot/`: a tool driven by the **user** may name the path it refused; the
+`crates/snapshot/` precedent arriving in a second crate. `DECISIONS.md` already records it
+for `crates/snapshot/`: a tool driven by the **user** may name the path it refused; the
 prohibition is on output that can **reach an agent**. The watcher's refusals are its
 startup errors, read from a terminal; its change stream is the thing Phase 3 will
 turn into agent-visible effects. **Do not unify them.** The harness's `!! REAL PATH

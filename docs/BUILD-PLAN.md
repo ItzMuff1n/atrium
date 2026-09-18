@@ -240,8 +240,8 @@ Create, read, write, move, delete, list — all routed through Phase 1's resolve
 
 ## 2b. The real shell
 
-> **SIGNED OFF HANDS-ON by Muffin, 14 Sep 2026.** The crate is `shell/`; the
-> harness is `bash shell/hand-test-2b.sh` — 78 lines, zero failures, 5 holes
+> **SIGNED OFF HANDS-ON by Muffin, 14 Sep 2026.** The crate is `crates/shell/`; the
+> harness is `bash crates/shell/hand-test-2b.sh` — 78 lines, zero failures, 5 holes
 > demonstrated on purpose. 2c comes next; **2e is required before anything
 > autonomous exercises this.**
 
@@ -268,7 +268,7 @@ Snapshot lands here, before anything autonomous touches files. **Nothing
 autonomous runs before undo exists.**
 
 > **Built 14 Sep 2026 — SIGNED OFF HANDS-ON by Muffin the same day. The gate is
-> passed.** The crate is `snapshot/`; the harness is `bash snapshot/hand-test-2c.sh`
+> passed.** The crate is `crates/snapshot/`; the harness is `bash crates/snapshot/hand-test-2c.sh`
 > (111 lines, 0 failures). See `STATUS.md` "Verified hands-on" for what he ran, and
 > `phase-2c-evidence.txt` for command-by-command output.
 >
@@ -281,12 +281,12 @@ autonomous runs before undo exists.**
 > **Two things 2c does not do, so a later session does not read them into it:**
 > it does not protect the store from a same-user command (that is 2e's boundary),
 > and it does not make snapshots happen automatically ("before every task" is
-> Phase 5's caller). Both are stated in `STATUS.md` and in `snapshot/README.md`.
+> Phase 5's caller). Both are stated in `STATUS.md` and in `crates/snapshot/README.md`.
 
 ## 2d. Filesystem watcher
 
 > **Built 15 Sep 2026 by the parent session; awaiting Muffin's hands-on gate. The
-> crate is `watcher/`; the harness is `bash watcher/hand-test-2d.sh` — 16 lines,
+> crate is `crates/watcher/`; the harness is `bash crates/watcher/hand-test-2d.sh` — 16 lines,
 > zero failures, zero real-path leaks.** See `STATUS.md` "Agent-reported" for what
 > was run, and `phase-2d-evidence.txt` for command-by-command output.
 >
@@ -387,7 +387,7 @@ Watched line by line, from an attack list written **before** the code, as Phases
 > to the phase that can answer it.)*
 >
 > *(Also 14 Sep 2026: 2a was verified by Muffin as its **own** gate — he ran
-> `fileops/hand-test-2a.sh` on its own, 64 lines, zero failures, and signed 2a
+> `crates/fileops/hand-test-2a.sh` on its own, 64 lines, zero failures, and signed 2a
 > off. So this block no longer describes one gate covering all four parts. Read it
 > as the standing list of what a user verification of Phase 2 covers: 2a has
 > already been watched; 2b, 2c, 2d remain, and 2e has its own block above. The
@@ -396,7 +396,7 @@ Watched line by line, from an attack list written **before** the code, as Phases
 >
 > *(Updated 15 Sep 2026: the last line of this block — "Run a shell command that
 > creates a file. Confirm the watcher noticed" — is **2d's**, and 2d is built and
-> awaits its own gate: `bash watcher/hand-test-2d.sh`. The line about "confirm it is
+> awaits its own gate: `bash crates/watcher/hand-test-2d.sh`. The line about "confirm it is
 > back" after a snapshot is 2c's and was signed off 14 Sep 2026.)*
 
 ---

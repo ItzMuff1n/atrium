@@ -143,12 +143,12 @@ fact:**
   list above.
 
 **No Atrium code exists apart from the resolver.** The spikes are
-throwaway. Phase 1 is built (`resolver/`, crate `atrium-resolver`) and verified
+throwaway. Phase 1 is built (`crates/resolver/`, crate `atrium-resolver`) and verified
 agent-side, and is **not signed off** — Muffin's hands-on pass is the
 outstanding step. No Phase 2+ code exists. See §7 for the ordered next steps.
 
 *(Superseded 13 Sep 2026. Both Phase 1 and Phase 1b were signed off hands-on by
-Muffin that day, and `resolver/` now resolves paths that do not exist yet as
+Muffin that day, and `crates/resolver/` now resolves paths that do not exist yet as
 well as existing ones. Still true: no Phase 2 code exists. Live state is in
 `STATUS.md`, "Current phase".)*
 
@@ -372,7 +372,7 @@ even when build and test pass. Use `hermes verify --skip-start` for
 command-line binaries; that is the sanctioned path and returns `ok: true`.
 Phases 1, 2 and 5 all produce CLIs, so this will recur.
 
-**Partially fixed 12 Sep 2026.** `resolver/.hermes/environment.json` was
+**Partially fixed 12 Sep 2026.** `crates/resolver/.hermes/environment.json` was
 written with `start: null` and `readinessPath: null`, which stops the bogus
 poll for this crate — `hermes verify` now returns `ok: true` with no flags
 needed. **This is a per-project workaround, not a fix to the tool:**
@@ -381,6 +381,10 @@ reintroduce `start: cargo run`. Every new CLI crate needs the same edit. The
 `--skip-start` advice above still applies as the general rule.
 
 **The project path contains a space** — "Nexus project". Quote it everywhere.
+*(No longer true as of 15 Sep 2026: the project moved to
+`/home/muffin/VibeCodeProjects/atrium`, which has no space. The line is kept
+because it is why so many earlier commands are quoted, and it still applies to the
+old backup folder at `/home/muffin/Desktop/Nexus project`.)*
 
 **Muffin uses ZSH**, not bash.
 
@@ -466,8 +470,8 @@ By decision (Muffin, 12 Sep 2026) **the copying is abolished.** Each SKILL.md no
 keeps its frontmatter and its body is a single instruction: read the source
 document at its absolute path and treat that file as the authority.
 
-- `atrium` → `/home/muffin/Desktop/Nexus project/AGENT-RULES.md` (192 lines)
-- `muffin-style` → `/home/muffin/Desktop/Nexus project/WORKING-WITH-MUFFIN.md` (351 lines)
+- `atrium` → `/home/muffin/VibeCodeProjects/atrium/docs/AGENT-RULES.md` (192 lines)
+- `muffin-style` → `/home/muffin/VibeCodeProjects/atrium/docs/WORKING-WITH-MUFFIN.md` (351 lines)
 
 **The old `diff` checks are dead.** They compared a copy against its source; there
 is no copy to compare any more. Do not re-add one. If a skill's body ever grows
@@ -528,7 +532,7 @@ day: Phase 1b's gate was passed, so nothing now waits — Phase 2 may start.)*
    **done 13 Sep 2026. Phase 1 is SIGNED OFF.** He ran the 91-line list plus
    his own paths; everything held. Details in STATUS.md, "Verified hands-on".
    Kept for the record: `phase-1-hands-on.md` has the four steps; the list runs
-   via `resolver/hand-test.sh`, which also checks independently that every
+   via `crates/resolver/hand-test.sh`, which also checks independently that every
    ACCEPT lands inside the root; `probe-parent.sh` and `probe-blind.sh` add the
    parent's probes and the §12 blind list's novel lines. The section E /
    section I contradiction was fixed before the pass. The three NUL lines in
@@ -551,10 +555,10 @@ wrong the same day — Phase 2a, 2b and 2c have since been built and signed off
 hands-on by Muffin, and 2d is the next build. They are replaced rather than
 appended to, because this section's whole failure mode is old ordering text
 outliving its condition. The four crates that exist and are signed off:
-`resolver/`, `fileops/`, `shell/`, `snapshot/`.)*
+`crates/resolver/`, `crates/fileops/`, `crates/shell/`, `crates/snapshot/`.)*
 
 *(Updated 15 Sep 2026: **2d is built and awaits its gate**, so "2d is the next
-build" is no longer current — the crate is `watcher/` and the gate is
-`bash watcher/hand-test-2d.sh`; see `STATUS.md` "Agent-reported". **2e is the next
+build" is no longer current — the crate is `crates/watcher/` and the gate is
+`bash crates/watcher/hand-test-2d.sh`; see `STATUS.md` "Agent-reported". **2e is the next
 build** and the last gate before Phase 5. Five crates now exist: the four signed-off
-ones above plus `watcher/`, built but **not yet signed off**.)*
+ones above plus `crates/watcher/`, built but **not yet signed off**.)*
