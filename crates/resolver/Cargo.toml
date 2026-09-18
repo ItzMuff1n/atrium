@@ -25,6 +25,13 @@ edition = "2021"
 # minimal case. https://github.com/proptest-rs/proptest
 proptest = "=1.11.0"
 
+# NEGATIVE PROOF, throwaway branch -- DO NOT MERGE.
+# `time` 0.3.46 is affected by RUSTSEC-2026-0009 (stack exhaustion when parsing
+# RFC 2822 input; patched in 0.3.47). This exists only to show that
+# `cargo deny check` in scripts/check.sh actually fails the build on a real
+# advisory, rather than being assumed to.
+time = "=0.3.46"
+
 
 [lib]
 name = "atrium_resolver"
