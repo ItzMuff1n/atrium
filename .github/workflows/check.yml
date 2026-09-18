@@ -1,0 +1,51 @@
+name: check
+
+# Runs on every push and every pull request. This is the same check the
+# pre-commit hook runs, so a green commit locally and a green run here mean the
+# same thing -- and a commit made with --no-verify is caught here instead of
+# being taken on trust.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    name: fmt, build, test, clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # rustup is preinstalled on GitHub's ubuntu-latest runners. This step
+      # installs whatever rust-toolchain.toml names, together with the
+      # components it lists (rustfmt, clippy) -- the file is the single source of
+      # the version, so CI and the developer machine cannot drift. Verified
+      # locally: a bare cargo invocation in a directory holding this file
+      # auto-installs that exact toolchain.
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Show the versions actually in use
+        run: |
+          rustc --version
+          cargo --version
+          cargo fmt --version
+          cargo clippy --version
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run the check
+        run: bash scripts/check.sh

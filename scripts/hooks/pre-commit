@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook: refuses a commit that would not pass CI.
+#
+# Wired by `git config core.hooksPath scripts/hooks` (run once per clone). It
+# runs the same script CI runs, so "it passed locally" and "it passed in CI"
+# cannot drift apart by omission.
+#
+# To skip it deliberately:  git commit --no-verify
+# Skipping is sometimes right (a WIP commit, a docs-only change) and is never
+# silent -- it has to be typed.
+
+set -uo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+printf 'pre-commit: running scripts/check.sh\n'
+if bash scripts/check.sh; then
+  printf 'pre-commit: checks passed\n'
+  exit 0
+fi
+
+printf '\npre-commit: scripts/check.sh FAILED -- commit refused.\n' >&2
+printf 'Fix the failure above, or bypass deliberately with: git commit --no-verify\n' >&2
+exit 1
