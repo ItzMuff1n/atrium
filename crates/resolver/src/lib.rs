@@ -12,7 +12,12 @@
 //!   each step, AFTER any symlinks in the prefix have been followed — a
 //!   purely lexical `..` collapse would let `/link-out/../home` pass.
 //! - Symlinks are canonicalised before the containment check, including
-//!   chains and loops.
+//!   chains and loops. Every hop of a chain is containment-checked, not just
+//!   the final location: a chain that leaves the root at any hop is refused
+//!   even if it comes back in (ruling 5, 18 Sep 2026 — docs/DECISIONS.md). A
+//!   target may be *spelled* through the root's ancestors (that is how an
+//!   absolute path is written), but a hop that *lands* on an ancestor has left
+//!   the root and is refused.
 //! - Lexical attacks (NUL bytes, relative paths, empty paths) are rejected
 //!   with per-case reasons before any filesystem call.
 //! - Phase 1b: a path whose target does not exist is ACCEPTED as long as
@@ -54,11 +59,12 @@ use std::path::{Component, Path, PathBuf};
 /// not (Phase 1b, item 10).
 const NAME_MAX_BYTES: usize = 255;
 
-/// Ceiling for following dangling symlinks (links whose target is absent,
-/// so `canonicalize` cannot follow them for us). Linux uses MAXSYMLINKS
-/// 40; existing links are followed by the filesystem and never touch this
-/// counter.
-const MAX_DANGLING_SYMLINKS: usize = 40;
+/// Ceiling for the resolver's OWN symlink-hop walk (`walk_link_target`),
+/// which checks containment at every hop rather than letting the filesystem
+/// follow the whole chain at once. Linux uses MAXSYMLINKS 40 for the chain
+/// it follows; this mirrors that ceiling so a loop is refused rather than
+/// walked forever.
+const MAX_LINK_HOPS: usize = 40;
 
 /// Structured rejection. `Display` gives a human-readable reason naming the
 /// offending component and the rule violated (Phase 1 brief §8.3 item 5).
@@ -83,6 +89,11 @@ pub enum ResolveError {
     EscapesRoot { input: String, reached: String },
     /// A symlink inside the root points outside it.
     SymlinkEscapes { link: String, target: String },
+    /// A symlink chain leaves the environment root at an intermediate step
+    /// and returns to it, so the path that comes out is inside while the
+    /// traversal was not. Strictness wins: the chain is refused, naming the
+    /// hop that left. (Ruling, 18 Sep 2026 — docs/DECISIONS.md.)
+    SymlinkChainLeavesRoot { link: String, target: String },
     /// A symlink chain loops (ELOOP from the operating system, or a loop
     /// among dangling links the resolver followed itself).
     SymlinkLoop { link: String },
@@ -146,6 +157,13 @@ impl fmt::Display for ResolveError {
                 write!(
                     f,
                     "Rejected: symlink `{}` points outside the environment root (its target is `{}`)",
+                    link, target
+                )
+            }
+            ResolveError::SymlinkChainLeavesRoot { link, target } => {
+                write!(
+                    f,
+                    "Rejected: the symlink chain through `{}` leaves the environment root (it reached `{}`, outside it) -- a chain that leaves the root is refused even if it later returns",
                     link, target
                 )
             }
@@ -220,17 +238,14 @@ fn split_pieces(path: &Path) -> Vec<Piece> {
         .collect()
 }
 
-/// How a containment failure is reported. The main virtual-path walk names
-/// the offending virtual step; a walk performed on behalf of a symlink
-/// target names the symlink instead (the agent asked for the link, and it
-/// is the link's target that is outside).
+/// How a containment failure is reported. The walk names the step the agent
+/// asked for, so a rejection points at the path the agent wrote rather than at
+/// a host path it never saw.
 #[derive(Debug, Clone)]
 enum ErrMode {
     /// Errors name virtual-path steps. Carries the original virtual input
     /// for the whole-input EscapesRoot reason.
     Virtual { input: String },
-    /// Errors name the symlink whose target is being walked.
-    Symlink { link_virtual: String },
 }
 
 impl ErrMode {
@@ -240,37 +255,41 @@ impl ErrMode {
                 input: input.clone(),
                 reached: reached.display().to_string(),
             },
-            ErrMode::Symlink { link_virtual } => ResolveError::SymlinkEscapes {
-                link: link_virtual.clone(),
-                target: reached.display().to_string(),
-            },
         }
     }
     fn above_root(&self, step: &str, reached: &Path) -> ResolveError {
-        match self {
-            ErrMode::Virtual { .. } => ResolveError::TraversalAboveRoot {
-                component: step.to_string(),
-                reached: reached.display().to_string(),
-            },
-            ErrMode::Symlink { link_virtual } => ResolveError::SymlinkEscapes {
-                link: link_virtual.clone(),
-                target: reached.display().to_string(),
-            },
+        ResolveError::TraversalAboveRoot {
+            component: step.to_string(),
+            reached: reached.display().to_string(),
         }
     }
     fn os_error(&self, step: &str, reason: String) -> ResolveError {
-        let path = match self {
-            ErrMode::Virtual { .. } => step.to_string(),
-            ErrMode::Symlink { link_virtual } => link_virtual.clone(),
-        };
-        ResolveError::OsError { path, reason }
+        ResolveError::OsError {
+            path: step.to_string(),
+            reason,
+        }
     }
     fn symlink_loop(&self, step: &str) -> ResolveError {
-        let link = match self {
-            ErrMode::Virtual { .. } => step.to_string(),
-            ErrMode::Symlink { link_virtual } => link_virtual.clone(),
-        };
-        ResolveError::SymlinkLoop { link }
+        ResolveError::SymlinkLoop {
+            link: step.to_string(),
+        }
+    }
+    /// A symlink chain left the root at a hop and may or may not have returned.
+    fn symlink_leaves(&self, step: &str, reached: &Path) -> ResolveError {
+        ResolveError::SymlinkChainLeavesRoot {
+            link: step.to_string(),
+            target: reached.display().to_string(),
+        }
+    }
+}
+
+/// A hop whose target lands outside the root, named as the symlink that made
+/// the hop — the form `blind_textual.rs` and `regression_textual_escape.rs`
+/// already saw for `/nope/../café` and friends.
+fn link_escapes(link_label: &str, reached: &Path) -> ResolveError {
+    ResolveError::SymlinkEscapes {
+        link: link_label.to_string(),
+        target: reached.display().to_string(),
     }
 }
 
@@ -376,12 +395,13 @@ fn walk(
     base: PathBuf,
     pieces: &[Piece],
     mode: &ErrMode,
-    depth: usize,
+    _depth: usize,
 ) -> Result<(PathBuf, bool), ResolveError> {
     let mut current = base;
     let mut pending: Vec<OsString> = Vec::new();
-    // Names the current step for reasons: virtual spellings for the main
-    // walk, host spellings for target walks (used only inside reasons).
+    // Names the current step for reasons: the virtual spelling the agent
+    // wrote, accumulated so a rejection names the whole step (`/trap/escape`),
+    // not the last component alone.
     let mut walked: Vec<String> = Vec::new();
     let mut absent_seen = false;
 
@@ -406,7 +426,13 @@ fn walk(
             match std::fs::canonicalize(&current) {
                 Ok(canonical) => {
                     if !canonical.starts_with(canon_root) {
-                        return Err(classify_escape(&current, piece, &walked, &canonical, mode));
+                        // A `..` that moves the walk outside the root is a
+                        // climb, whatever the position is: ancestors of the
+                        // root are only ever traversed as part of *spelling* a
+                        // target from the host root, never as a step of the
+                        // agent's own path. Named as the climb, so a rejection
+                        // names the step that climbed.
+                        return Err(mode.above_root(&step_label, &canonical));
                     }
                     current = canonical;
                 }
@@ -431,52 +457,20 @@ fn walk(
             continue;
         }
 
-        // A name directly below the confirmed position: canonicalise it. This
-        // is the step that follows symlinks and re-checks containment, and it
-        // runs for every component that exists on disk, whatever came earlier
-        // in the path.
-        current.push(comp_os);
-        match std::fs::canonicalize(&current) {
-            Ok(canonical) => {
-                if !canonical.starts_with(canon_root) {
-                    return Err(classify_escape(&current, piece, &walked, &canonical, mode));
-                }
-                current = canonical;
-            }
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    absent_seen = true;
-                    let is_symlink = std::fs::symlink_metadata(&current)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false);
-                    if is_symlink {
-                        // A dangling symlink: the link exists, its target does
-                        // not. The target decides (ruling K.1a) — outside the
-                        // root it is refused whether the target exists or not.
-                        // Inside the root, where the target would sit becomes
-                        // the absent remainder.
-                        let link_mode = ErrMode::Symlink {
-                            link_virtual: step_label.clone(),
-                        };
-                        let resolved = follow_dangling(canon_root, &current, &link_mode, depth)?;
-                        pending = rel_components(canon_root, &resolved, mode)?;
-                        current = canon_root.to_path_buf();
-                    } else {
-                        // An ordinary absent name. The confirmed position does
-                        // not move; the name joins the absent remainder.
-                        pending = rel_components(canon_root, &current, mode)?;
-                        current = canon_root.to_path_buf();
-                    }
-                }
-                _ => {
-                    let reason = e.to_string();
-                    return Err(if reason.contains("Too many levels of symbolic links") {
-                        mode.symlink_loop(&step_label)
-                    } else {
-                        mode.os_error(&step_label, reason)
-                    });
-                }
-            },
+        // A name directly below the confirmed position. Split it into its
+        // symlink hops and check containment at EVERY hop (ruling, 18 Sep
+        // 2026), then place the result: a confirmed position if it exists, an
+        // absent remainder if it does not.
+        let (location, exists, any_absent) =
+            walk_link_target(canon_root, &current, comp_os, &step_label, mode)?;
+        if any_absent {
+            absent_seen = true;
+        }
+        if exists {
+            current = location;
+        } else {
+            pending = rel_components(canon_root, &location, mode)?;
+            current = canon_root.to_path_buf();
         }
     }
 
@@ -530,198 +524,319 @@ fn rel_components(
     }
 }
 
-/// Phase 1's per-case rejection selection for a step that canonicalised
-/// outside the root. Unchanged from Phase 1, except escapes are named per
-/// `mode` when walking a symlink target.
-fn classify_escape(
-    current: &Path,
-    piece: &Piece,
-    walked: &[String],
-    canonical: &Path,
-    mode: &ErrMode,
-) -> ResolveError {
-    let step_label = format!("/{}", walked.join("/"));
-    let prev_is_symlink = {
-        let mut prev = current.to_path_buf();
-        prev.pop();
-        std::fs::symlink_metadata(&prev)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-    };
-    let this_is_symlink = std::fs::symlink_metadata(current)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false);
-
-    if piece.is_parent() && prev_is_symlink {
-        // The directory we `..`'d out of was itself an escaping symlink
-        // (e.g. /link-to-etc/../home).
-        let mut link = current.to_path_buf();
-        link.pop();
-        ResolveError::SymlinkEscapes {
-            link: display_virtual_prev(walked),
-            target: std::fs::canonicalize(&link)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "<unresolvable>".to_string()),
-        }
-    } else if piece.is_parent() {
-        mode.above_root(&step_label, canonical)
-    } else if this_is_symlink {
-        ResolveError::SymlinkEscapes {
-            link: step_label,
-            target: canonical.display().to_string(),
-        }
-    } else {
-        mode.escape(canonical)
-    }
+/// True when `p` is inside the environment root, is the root itself, or is an
+/// **ancestor** of it — the three positions the walk may pass THROUGH.
+///
+/// The ancestor case is why this exists. An absolute symlink target such as
+/// `<root>/home/documents` is spelled with the host path of the root in it, so
+/// walking that spelling passes through `/`, `/tmp`, the directory the root
+/// sits in. Those are outside the root and they are the *way in* to it: they
+/// are how the address is written, not a departure from the environment.
+///
+/// Passing through is not the same as landing. A hop that *ends* at an ancestor
+/// — `<root>/a -> /home` — has left the root, and is refused (ruling, 18 Sep
+/// 2026). A hop that ends at `/etc` or at a directory beside the root has left
+/// it too. This predicate is used for positions the walk is traversing and for
+/// the position a hop lands on; the landing check pairs it with a containment
+/// test so an ancestor landing is caught.
+fn on_the_way_in(canon_root: &Path, p: &Path) -> bool {
+    p.starts_with(canon_root) || canon_root.starts_with(p)
 }
 
-/// Resolve the target of a dangling symlink (the link exists, its target
-/// is absent, so `canonicalize` could not follow it). The result is the
-/// location the target would occupy: its canonical longest-existing prefix
-/// plus the lexically-normalised absent remainder. It is checked against
-/// the root; a target outside rejects whether it exists or not.
-///
-/// The prefix is canonicalised whole — never walked step by step from the
-/// host root — so the check mirrors what Phase 1 does for a followed link:
-/// containment is decided at the point the target *lands*, and ancestors
-/// of the environment root (which are outside it by definition) are never
-/// mistaken for an escape.
-fn follow_dangling(
-    canon_root: &Path,
-    link: &Path,
-    mode: &ErrMode,
-    depth: usize,
-) -> Result<PathBuf, ResolveError> {
-    if depth >= MAX_DANGLING_SYMLINKS {
-        return Err(mode.symlink_loop(&link.display().to_string()));
-    }
-    let target = std::fs::read_link(link).map_err(|e| {
+/// The components of a raw symlink target, in order, with `.` and repeated
+/// separators elided and `..` kept as a component (its meaning is positional:
+/// it applies to where the walk actually is, not to the spelling).
+fn target_pieces(target: &Path) -> Vec<OsString> {
+    target
+        .components()
+        .filter_map(|c| match c {
+            Component::RootDir | Component::CurDir => None,
+            Component::ParentDir => Some(OsString::from("..")),
+            Component::Normal(n) => Some(n.to_os_string()),
+            // Windows drive prefixes; this resolver is Linux-only, and a
+            // prefix cannot occur here anyway. Unreachable, not ignored.
+            Component::Prefix(_) => None,
+        })
+        .collect()
+}
+
+/// The canonical directory a relative symlink target hangs off: the link's own
+/// directory. The walk only ever reaches a link at a position it has already
+/// canonicalised, so this is a confirmation, not a new traversal.
+fn link_base(canon_root: &Path, link: &Path, mode: &ErrMode) -> Result<PathBuf, ResolveError> {
+    let mut dir = link.to_path_buf();
+    dir.pop();
+    let canonical = std::fs::canonicalize(&dir).map_err(|_| {
         mode.os_error(
             &link.display().to_string(),
-            format!("could not read symlink: {}", e),
+            "the symlink's own directory could not be canonicalised".to_string(),
         )
     })?;
-
-    // Make the target absolute: absolute targets stand as written,
-    // relative targets hang off the link's directory. The walk only ever
-    // follows links whose own position was canonical, so that directory
-    // is already canonical.
-    let mut full = if target.is_absolute() {
-        target
-    } else {
-        let mut dir = link.to_path_buf();
-        dir.pop();
-        dir.join(target)
-    };
-
-    // Pop trailing components until canonicalize succeeds. The components
-    // popped are the absent remainder (plus any `..`/`.` segments mingled
-    // with it), kept in order.
-    let mut remainder: Vec<OsString> = Vec::new();
-    let canonical = loop {
-        match std::fs::canonicalize(&full) {
-            Ok(p) => break p,
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    // If the name just dropped is itself a symlink, it is
-                    // still a symlink: recurse into its target (with the
-                    // depth ceiling) and then append the remainder we had
-                    // already peeled off.
-                    let is_link = std::fs::symlink_metadata(&full)
-                        .map(|m| m.file_type().is_symlink())
-                        .unwrap_or(false);
-                    if is_link {
-                        let resolved = follow_dangling(canon_root, &full, mode, depth + 1)?;
-                        let mut out = resolved;
-                        // The peeled remainder re-applies lexically. `..`
-                        // pops are textually applied below by the same
-                        // normalisation used everywhere else.
-                        let mut stack = rel_components(canon_root, &out, mode)?;
-                        for name in remainder.iter().rev() {
-                            if name == OsStr::new("..") {
-                                if stack.pop().is_none() {
-                                    return Err(
-                                        mode.above_root(&full.display().to_string(), canon_root)
-                                    );
-                                }
-                            } else if name == OsStr::new(".") {
-                                // elided
-                            } else {
-                                stack.push(name.clone());
-                            }
-                        }
-                        out = canon_root.to_path_buf();
-                        for n in &stack {
-                            out.push(n);
-                        }
-                        if !out.starts_with(canon_root) {
-                            return Err(mode.escape(&out));
-                        }
-                        return Ok(out);
-                    }
-                    match full.file_name() {
-                        Some(name) => {
-                            remainder.push(name.to_os_string());
-                            full.pop();
-                        }
-                        None => {
-                            // Reached "/" without canonicalising: nothing
-                            // exists at all. Report honestly.
-                            return Err(mode.os_error(
-                                &link.display().to_string(),
-                                "no component of the symlink target exists".to_string(),
-                            ));
-                        }
-                    }
-                }
-                _ => {
-                    let reason = e.to_string();
-                    return Err(if reason.contains("Too many levels of symbolic links") {
-                        mode.symlink_loop(&full.display().to_string())
-                    } else {
-                        mode.os_error(&full.display().to_string(), reason)
-                    });
-                }
-            },
-        }
-    };
-
-    // The existing prefix must land inside the root — this is the exact
-    // containment check a canonicalised link gets in Phase 1.
     if !canonical.starts_with(canon_root) {
         return Err(mode.escape(&canonical));
     }
-
-    // The absent remainder is normalised lexically on top of the prefix:
-    // `.` elided, `x/..` removes `x`, a `..` popping past the canonical
-    // root boundary is an escape.
-    let mut stack = rel_components(canon_root, &canonical, mode)?;
-    for name in remainder.iter().rev() {
-        if name == OsStr::new("..") {
-            if stack.pop().is_none() {
-                return Err(mode.above_root(&link.display().to_string(), canon_root));
-            }
-        } else if name == OsStr::new(".") {
-            // elided
-        } else {
-            stack.push(name.clone());
-        }
-    }
-    let mut out = canon_root.to_path_buf();
-    for n in &stack {
-        out.push(n);
-    }
-    if !out.starts_with(canon_root) {
-        return Err(mode.escape(&out));
-    }
-    Ok(out)
+    Ok(canonical)
 }
 
-/// The virtual spelling of all-but-the-last walked component, for naming a
-/// symlink in a `..` rejection.
-fn display_virtual_prev(walked: &[String]) -> String {
-    if walked.len() <= 1 {
-        return "/".to_string();
+/// Resolve `pieces` from the canonical position `base`, following every symlink
+/// **one hop at a time** and checking containment as the walk arrives at each
+/// position (ruling, 18 Sep 2026).
+///
+/// This is the whole fix. The resolver used to hand a component to
+/// `canonicalize`, which follows an entire chain — out of the root and back —
+/// and reports only where it lands, so an out-and-back chain looked contained.
+/// Here each hop is read with `read_link` and re-entered as its own walk, so
+/// the position outside the root is reached as a *step* and refused there.
+///
+/// A hop that leaves the root fails immediately, naming the link: the link is
+/// named by `origin_label` while the walk is still inside the link's own target,
+/// and by the host spelling of the link once `crossed` is true — that is, once
+/// the walk has left the root and is travelling through the outside, where a
+/// virtual spelling no longer points anywhere real.
+///
+/// Returns the location and whether it exists. The location is inside the root
+/// unless an error is returned.
+/// Resolve `pieces` from the canonical position `base`, following every symlink
+/// **one hop at a time** and checking containment as the walk arrives at each
+/// position (ruling, 18 Sep 2026).
+///
+/// This is the fix. The resolver used to hand a component to `canonicalize`,
+/// which follows an entire chain — out of the root and back — and reports only
+/// where it lands, so an out-and-back chain looked contained. Here each hop is
+/// read with `read_link` and re-entered as its own walk, so the position
+/// outside the root is reached as a *step*, and the departure is recorded when
+/// it happens rather than judged from the landing.
+///
+/// Two different things are checked, and the ruling needs both:
+///
+/// - **Traversal** may pass through any ancestor of the root (and the root, and
+///   anything inside it). That is not a departure: an absolute target that
+///   points inside is spelled `<root>/home/documents`, and `<root>` is written
+///   with the host paths above it, so the walk must travel `/`, `/tmp`, the
+///   root's parent to arrive. See `on_the_way_in` / `traversable`.
+/// - **Landing** may not. A hop that ends at an ancestor — `<root>/a -> /home`
+///   — or at a directory beside the root, or at `/etc`, has left the
+///   environment. The departure is recorded in `seen_out` at the moment it
+///   happens, so a chain that leaves and comes back is refused even though its
+///   final location is inside the root.
+///
+/// `..` is applied to a confirmed position by the filesystem, so a file
+/// followed by `..` reports the operating system's own ENOTDIR (ruling 2)
+/// rather than being normalised away. A `..` that moves the walk outside the
+/// root is a climb and is named as one.
+///
+/// Returns the location and whether it exists. Whether the chain left is
+/// reported through `seen_out`, not through the return value.
+#[allow(clippy::too_many_arguments)]
+fn resolve_from(
+    canon_root: &Path,
+    base: &Path,
+    pieces: &[OsString],
+    origin_label: &str,
+    mode: &ErrMode,
+    hops: &mut usize,
+    seen_out: &mut Option<(String, PathBuf)>,
+) -> Result<(PathBuf, bool), ResolveError> {
+    let mut current = base.to_path_buf();
+    let mut pending: Vec<OsString> = Vec::new();
+
+    for name in pieces {
+        if name == OsStr::new("..") {
+            if pending.pop().is_some() {
+                // Cancels the last absent name, lexically: nothing was there.
+                continue;
+            }
+            // Applies to a confirmed position, so ask the filesystem. A file
+            // followed by `..` reports the operating system's own ENOTDIR
+            // (ruling 2), which is why this is not a textual pop.
+            current.push("..");
+            match std::fs::canonicalize(&current) {
+                Ok(c) => {
+                    if !canon_root.starts_with(&c) {
+                        // A climb that leaves the root — the ancestors of the
+                        // root are only ever traversed while spelling a target
+                        // from the host root, never as a `..` of the walk.
+                        return Err(mode.above_root(origin_label, &c));
+                    }
+                    current = c;
+                }
+                Err(e) => {
+                    current.pop();
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        return Err(mode.above_root(origin_label, canon_root));
+                    }
+                    return Err(mode.os_error(origin_label, e.to_string()));
+                }
+            }
+            continue;
+        }
+        if name == OsStr::new(".") {
+            continue;
+        }
+        if !pending.is_empty() {
+            // Below something absent: it cannot exist either, so it is text.
+            pending.push(name.clone());
+            continue;
+        }
+
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                *hops += 1;
+                if *hops > MAX_LINK_HOPS {
+                    return Err(mode.symlink_loop(origin_label));
+                }
+                let target = std::fs::read_link(&current).map_err(|e| {
+                    mode.os_error(
+                        &current.display().to_string(),
+                        format!("could not read symlink: {}", e),
+                    )
+                })?;
+                // Name the step the agent wrote while the walk is still inside
+                // the root; once it has left, only a host spelling means
+                // anything.
+                let label = if seen_out.is_some() || !current.starts_with(canon_root) {
+                    current.display().to_string()
+                } else {
+                    origin_label.to_string()
+                };
+                let (hop_base, hop_pieces) = if target.is_absolute() {
+                    (PathBuf::from("/"), target_pieces(&target))
+                } else {
+                    (
+                        link_base(canon_root, &current, mode)?,
+                        target_pieces(&target),
+                    )
+                };
+                // The hop's target is walked from its own base. A position
+                // outside the root is reached here as a step, so the departure
+                // is seen rather than inferred from where the chain lands.
+                let (location, exists) = resolve_from(
+                    canon_root,
+                    &hop_base,
+                    &hop_pieces,
+                    &label,
+                    mode,
+                    hops,
+                    seen_out,
+                )?;
+                if seen_out.is_none() && !on_the_way_in(canon_root, &location) {
+                    // The link's target lands outside: it has left the root,
+                    // whatever happens next. Recorded once, so the link that
+                    // made the hop is the one named, together with the position
+                    // it reached.
+                    *seen_out = Some((label, location.clone()));
+                }
+                if exists {
+                    current = location;
+                } else if location.starts_with(canon_root) {
+                    // The target is absent, so every component beneath it is
+                    // too. Move to the root and carry the location as the
+                    // absent remainder, exactly as the main walk does:
+                    // `current` and `pending` must not both name it, or a later
+                    // `..` cancels the remainder while the position still holds
+                    // it and the walk steps back onto a path that is not there.
+                    pending = rel_components(canon_root, &location, mode)?;
+                    current = canon_root.to_path_buf();
+                } else {
+                    // Absent AND outside the root. Left as the position so the
+                    // caller names it as the escape it is; `rel_components`
+                    // would raise a whole-input escape here and lose the fact
+                    // that a symlink's target is what left.
+                    current = location;
+                }
+            }
+            Ok(_) => {
+                // A real entry that is not a link. `base` is canonical and
+                // every position is canonicalised as it is reached, so this is
+                // already its canonical form.
+                if seen_out.is_none() && !on_the_way_in(canon_root, &current) {
+                    // The walk has arrived somewhere that is neither inside the
+                    // root nor on the way in to it — a directory beside the
+                    // root, `/etc`, the host root. That is the chain leaving,
+                    // and the position reached is the evidence for it.
+                    *seen_out = Some((origin_label.to_string(), current.clone()));
+                }
+            }
+            Err(_) => {
+                // Either genuinely absent, or the operating system refused the
+                // path. A name below an existing FILE is ENOTDIR, and that is
+                // reported as the OS's own reason (ruling 2) rather than being
+                // read as an absent name — otherwise `/notes.txt/newfile` would
+                // be accepted as an absent path inside the root.
+                match std::fs::canonicalize(&current) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // Absent, and not a link. It joins the remainder.
+                        pending.push(name.clone());
+                        current.pop();
+                    }
+                    Err(e) => return Err(mode.os_error(origin_label, e.to_string())),
+                    Ok(_) => {
+                        // Stat failed but canonicalise succeeded: race, not a
+                        // steady state. Treat the entry as absent for this walk.
+                        pending.push(name.clone());
+                        current.pop();
+                    }
+                }
+            }
+        }
     }
-    format!("/{}", walked[..walked.len() - 1].join("/"))
+
+    if pending.is_empty() {
+        return Ok((current, true));
+    }
+    let mut out = current;
+    for n in &pending {
+        out.push(n);
+    }
+    Ok((out, false))
+}
+
+/// Walk one virtual component to its resolved location, following the symlink
+/// hops inside it one at a time so containment is checked at every hop
+/// (ruling, 18 Sep 2026).
+///
+/// The chain has left the root if any hop *landed* outside it, even when the
+/// walk came back in; that is the ruling, and it is why `seen_out` is consulted
+/// before the final location is trusted.
+///
+/// Returns `(location, exists, any_absent)`: where the component resolved,
+/// whether that location exists (as opposed to being an absent remainder), and
+/// whether anything along the way was absent.
+fn walk_link_target(
+    canon_root: &Path,
+    dir: &Path,
+    name: &OsStr,
+    step_label: &str,
+    mode: &ErrMode,
+) -> Result<(PathBuf, bool, bool), ResolveError> {
+    let mut hops = 0usize;
+    let mut seen_out: Option<(String, PathBuf)> = None;
+    let (location, exists) = resolve_from(
+        canon_root,
+        dir,
+        &[name.to_os_string()],
+        step_label,
+        mode,
+        &mut hops,
+        &mut seen_out,
+    )?;
+
+    if !location.starts_with(canon_root) {
+        // The chain ends outside the root: at an ancestor of the root (a link
+        // whose target is `/home` when the root sits below it — the chain left
+        // without ever traversing a position that is not an ancestor), or
+        // somewhere further out.
+        let label = match seen_out {
+            Some((label, _)) => label,
+            None => step_label.to_string(),
+        };
+        return Err(link_escapes(&label, &location));
+    }
+    if let Some((label, left_at)) = seen_out {
+        // It left and came back: refused anyway (ruling, 18 Sep 2026). The
+        // position named is where the chain left, not where it ended.
+        return Err(mode.symlink_leaves(&label, &left_at));
+    }
+    Ok((location, exists, !exists))
 }
