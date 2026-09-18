@@ -716,3 +716,10 @@ fn phase1b_attack_list() {
     // file ACCEPTs.
     accepts(&f, "/home/documents/notes.txt/");
 }
+
+// A genuinely new test, to prove test-guard stays green when a pull request
+// only adds coverage.
+#[test]
+fn probe_added_test_is_counted_and_green() {
+    assert_eq!(2 + 2, 4);
+}
