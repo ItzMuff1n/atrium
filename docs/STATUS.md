@@ -1794,3 +1794,43 @@ Neither was ever a blocker for Phase 1 sign-off.
 - Phase 0 is throwaway spike code. Do not build architecture in it.
 - Phase 0b is a stop-and-rethink gate: if the Rust MCP SDK fails badly, the
   backend language decision is reopened. See `DECISIONS.md` §Backend.
+
+---
+
+## The repository (18 Sep 2026, Hermes session)
+
+**This is infrastructure, not a phase.** No design changed; only where the code
+lives and how "done" is decided.
+
+- **The project moved** from `/home/muffin/Desktop/Nexus project` to
+  **`/home/muffin/VibeCodeProjects/atrium`**. The five crates are now under
+  `crates/` as one cargo workspace with a single root `Cargo.lock`; the documents are
+  under `docs/`, with the historical material under `docs/archive/`. **The old folder
+  is left in place, untouched, as a backup** — verified byte-identical to a baseline
+  taken before the copy.
+- **It is on GitHub as `ItzMuff1n/atrium`, private.** `main` is the branch.
+- **"Done" no longer means an agent's own report.** It means `scripts/check.sh`
+  passes — locally, and in CI on GitHub. The script runs, in order and stopping at
+  the first failure: `cargo fmt --all -- --check`,
+  `cargo build --workspace --all-targets`, `cargo test --workspace`,
+  `cargo clippy --workspace --all-targets`. **Clippy is report-only for now** — the
+  warnings print but do not fail the run.
+- **Both gates are wired and were watched working, not just configured.** The
+  pre-commit hook (`scripts/hooks/pre-commit`, enabled via
+  `core.hooksPath=scripts/hooks`) runs the same script and was seen refusing a bad
+  commit; CI (`.github/workflows/check.yml`) was seen **failing** a deliberately
+  broken commit and passing a good one. A check that cannot fail is not a check.
+- **The toolchain is pinned** in `rust-toolchain.toml` to `1.92.0` — the version this
+  machine runs — so local and CI compile with the same compiler.
+- **Tests are unchanged by the move: 197 passing, 0 failed** — 13 resolver, 56
+  fileops, 45 shell, 41 snapshot, 42 watcher. Identical before and after.
+- **No crate source was modified by this work.** The move is plumbing only.
+- Full account, including the four things that did not go as planned, is in
+  `/home/muffin/VibeCodeProjects/atrium-setup-report.md` (§§1–15).
+
+**Owed, and not done here:** 26 clippy warnings remain (all style, none behavioural);
+the CI actions target Node.js 20 which GitHub is retiring. Both are deferred
+deliberately — fixing either means changing crate source.
+
+**Still outstanding from before this:** Muffin's hands-on gate for Phase 2d,
+`bash crates/watcher/hand-test-2d.sh`.
