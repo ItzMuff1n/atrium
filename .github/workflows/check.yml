@@ -1,9 +1,18 @@
 name: check
 
-# Runs on every push and every pull request. This is the same check the
+# Two jobs.
+#
+# `check` runs on every push and every pull request. This is the same check the
 # pre-commit hook runs, so a green commit locally and a green run here mean the
 # same thing -- and a commit made with --no-verify is caught here instead of
 # being taken on trust.
+#
+# `test-guard` runs on pull requests only. It exists because `check` answers
+# "do the tests pass?", which a change can also make true by deleting or
+# weakening the tests instead of fixing the code. `test-guard` compares the PR
+# against its base branch and refuses a pull request that declares fewer tests,
+# that removes or changes an assertion, or that adds #[ignore]. See
+# scripts/test-guard.sh for what it does and does not catch.
 
 on:
   push:
@@ -49,3 +58,45 @@ jobs:
 
       - name: Run the check
         run: bash scripts/check.sh
+
+  test-guard:
+    name: test-guard
+    runs-on: ubuntu-latest
+    # Only a pull request has a base branch to compare against, so this job is
+    # meaningless on a push and does not run there.
+    if: github.event_name == 'pull_request'
+
+    steps:
+      # fetch-depth: 0 is required: the guard compares the PR head against the
+      # base branch and needs the merge base, which a shallow clone does not
+      # have. Without it the comparison would silently have nothing to look at,
+      # and the guard is written to fail in that case rather than pass.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Make the base branch available
+        run: |
+          git fetch --no-tags origin \
+            "+refs/heads/${{ github.base_ref }}:refs/remotes/origin/${{ github.base_ref }}"
+          git rev-parse "origin/${{ github.base_ref }}"
+
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Run the test guard
+        run: bash scripts/test-guard.sh
