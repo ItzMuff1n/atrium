@@ -555,6 +555,77 @@ Removed from config Sep 2026. Full evidence in `pipeline-check.md` §5.
 
 ## Agent-reported, unverified
 
+### Phase 1b REOPENED by the resolver's own property test, fixed, and awaiting Muffin's hand re-test (18 Sep 2026, Hermes session)
+
+**Phase 1b is not signed off. It was reopened on 18 Sep 2026 and this entry does
+not close it.** The line it was reopened on: a path containing a component that
+does not exist, followed by `..`, followed by the name of a symlink pointing
+outside the root, was ACCEPTED, and the location returned canonicalised outside
+the root.
+
+Reachable through the file operations, not only through `resolve()`: `fileops`
+resolves every path through `RealPath` and relies on that single doorway, so
+`write_file` with such a path **overwrote a file outside the root** — demonstrated
+by test before the fix, `write_file` through `/nope/../café` replacing
+`outside/secret.txt`'s contents with `OVERWRITTEN-BY-THE-SANDBOX`.
+
+**Cause.** The walk treated the first component that canonicalised as not-found as
+switching the entire remainder to textual handling, so nothing further was
+stat-ed. A symlink name reached after that point was never followed, and the final
+containment check compared a textual path against the canonical root.
+
+**Fix (merged).** A confirmed position (canonical, existing, inside the root) and
+a pending absent remainder, kept apart. A name below the confirmed position is
+canonicalised and containment-checked; a name below something absent cannot exist,
+so it is text. `..` cancels a pending absent name lexically and is otherwise
+handed to the filesystem, so a file followed by `..` still reports the operating
+system's own ENOTDIR (ruling 2). The final check canonicalises the longest
+existing prefix and compares canonical paths.
+
+**Evidence run in-session:**
+- `scripts/check.sh` → exit 0, **250 declared tests**, all passing (197 on `main`).
+- The property test that found this (`tests/resolver_props.rs`) fails on the
+  unfixed resolver and passes on the fixed one.
+- `tests/regression_textual_escape.rs` — 13 tests, **10 fail before the fix**,
+  13 pass after.
+- `crates/fileops/tests/regression_textual_escape_fileops.rs` — 7 tests, **5 fail
+  before**, 7 pass after.
+- `tests/blind_textual.rs` — 30 cases from a subagent given only the rules as
+  written, no source and no tests; 31 tests passing. Three of its 30 expectations
+  are wrong under the project's own rulings and are adjudicated in the file.
+- `hand-test-1b.sh` section N is a real negative proof: **14 of its lines fail on
+  the unfixed resolver**, all pass on the fixed one.
+- Phase 1b sections A–M: **92 lines ok, 0 fail**, unchanged before and after.
+- Phase 1's unedited `hand-test.sh`: its **28 pre-existing failures are the same
+  set before and after** the fix, with the whole run identical apart from the
+  throwaway root's path. Those 28 are the recorded 1b verdict inversions, not
+  regressions.
+
+**The gate is Muffin's, and it is unchanged except for one added section:**
+
+```
+cd "/home/muffin/VibeCodeProjects/atrium/crates/resolver" && bash hand-test-1b.sh
+```
+
+Expected: `hand-test-1b: every line behaved as required`, exit 0, with section N
+present and every one of its escape lines REJECTED.
+
+**One more thing found and fixed in the same commit, in the harness rather than
+the resolver.** `hand-test-1b.sh`'s own independent containment check compared
+path *spellings* with a string prefix test, which is exactly what the bug fools:
+on the vulnerable build it reported **0 escapes** while 14 lines were escaping. It
+now compares **real** paths via `realpath`. Separately: the script resolves its
+binary as `./target/debug/atrium-resolver` relative to the **current directory**,
+so a stale build under `crates/resolver/target/` is used silently if one is
+present. Not changed here — noted for whoever runs it.
+
+**A design question this raised, recorded rather than settled.** A path whose
+symlink chain goes OUT of the root and back IN (e.g. `<root>/hop` →
+`<outside>/relay` → `<root>`) is ACCEPTED, because `canonicalize` follows the
+whole chain and only the final canonical location is checked. Refusing any chain
+that momentarily leaves the root would be stricter, and is not the rule currently
+written down. Needs a decision.
+
 ### Phase 2d — the filesystem watcher: built in-session by the parent, because the last three build children died at the cap (15 Sep 2026, Hermes session)
 
 **Read this entry as evidence of what was RUN, not as a pass.** Phase 2d is NOT
