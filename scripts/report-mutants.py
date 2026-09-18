@@ -30,7 +30,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-ISSUE_LABEL = "mutation"
+# The aggregate tracker carries `mutation-report`; the per-file child issues the
+# queue splits it into carry `mutation`. Keeping the two apart is what lets this
+# script find its own tracker without ever mistaking a child for it -- a child is
+# a small specific job, a tracker is the run-level summary.
+ISSUE_LABEL = "mutation-report"
 ISSUE_TITLE = "mutation testing: mutants not covered by tests"
 
 # "crates/fileops/src/lib.rs:71:9: replace parent_lexical -> String with ..."

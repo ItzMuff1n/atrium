@@ -22,3 +22,9 @@ build/
 # linux/.gitignore already ignores this path; the line is repeated here so the
 # exclusion survives even if that scaffold file is ever regenerated.
 spikes/**/linux/flutter/ephemeral/
+
+# Python bytecode. The CI reporting scripts are run directly and get imported
+# or compiled on the way, which leaves a __pycache__ next to them; committing
+# that is noise in every future diff that touches those scripts.
+__pycache__/
+*.pyc
