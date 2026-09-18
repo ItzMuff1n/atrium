@@ -49,14 +49,19 @@ jobs:
       # v6.1.0, not v4, for the same Node 20 reason as checkout above. v6.1.0
       # declares node24.
       #
-      # ~/.cargo/bin/ is cached, which is what makes the cargo-deny install below
-      # a one-time cost: on later runs the binary is already in the restored
-      # cache and `cargo install` reports it as installed and exits.
+      # ~/.cargo/registry and target/ are cached. ~/.cargo/bin/ is NOT, and that
+      # is load-bearing rather than a tidy-up: caching it made this step's install
+      # below work on the first run and break on every run after it. Restoring
+      # ~/.cargo/bin brings back the cargo-deny binary without the tracking file
+      # cargo uses to know a package is installed, and cargo then has a binary it
+      # cannot identify -- it will neither skip the install nor overwrite the
+      # file. The step dies with "binary `cargo-deny` already exists in
+      # destination", exit 101, before the check runs. The install reads the
+      # registry, never a staged binary, so the registry is what makes it cheap.
       - name: Cache cargo registry and build output
         uses: actions/cache@v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
@@ -70,8 +75,23 @@ jobs:
       # tool's own dependency resolution cannot drift either. Pinned to the
       # version installed and run locally, so a green local run and a green CI
       # run are the same check. See scripts/check.sh step 5.
+      #
+      # `--force` is load-bearing, not hygiene. `cargo install` REFUSES to
+      # overwrite an existing binary in its destination ("binary `cargo-deny`
+      # already exists in destination", exit 101), so any cargo-deny already
+      # present -- from a runner image, or from a cache saved while
+      # ~/.cargo/bin was still in the path list above -- would make this step die
+      # here and take the whole required check with it.
+      #
+      # This is latent today, not live: the archive that currently satisfies this
+      # key does not contain the binary, which is why the run on main downloads
+      # and compiles cargo-deny from scratch every time (observed on run
+      # 35397574653). It becomes live the moment a key change saves an archive
+      # that does contain one. Reproduced locally on 19 Sep 2026 in a throwaway
+      # CARGO_HOME holding bin/cargo-deny and no .crates.toml: exit 101 without
+      # --force, exit 0 with it.
       - name: Install cargo-deny (pinned)
-        run: cargo install --locked cargo-deny --version 0.20.2
+        run: cargo install --locked --force cargo-deny --version 0.20.2
 
       - name: Show the cargo-deny version actually in use
         run: cargo deny --version
@@ -105,11 +125,18 @@ jobs:
       - name: Install the pinned toolchain
         run: rustup show
 
+      # ~/.cargo/bin/ is excluded here for the same reason as the check job
+      # above: restoring it brings back a binary without cargo's tracking file,
+      # which is what breaks a `cargo install` step. This job installs no binary
+      # of its own, and it does not save this cache -- on a pull request the key
+      # was already written by the check job's push run, so this job's log says
+      # "Cache hit occurred on the primary key ... not saving" (observed on run
+      # 35397574653). The exclusion is dormant today; it is here so this file
+      # cannot grow the trap back if this job ever runs with a cold key.
       - name: Cache cargo registry and build output
         uses: actions/cache@v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
