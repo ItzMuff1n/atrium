@@ -1,0 +1,49 @@
+# Dependabot: dependency updates as pull requests.
+#
+# Written 18 Sep 2026, in the same change that put the supply-chain gate
+# (cargo-deny) into scripts/check.sh. The two belong together: cargo-deny answers
+# "is what we depend on now acceptable", and this answers "is what we depend on
+# still current, and does anyone find out when an advisory lands". An advisory
+# check with no update path is a report you cannot act on.
+#
+# Every PR opened here is an ordinary pull request against `main`, so it is
+# subject to the `main-protection` ruleset like any other: it cannot be merged
+# until `fmt, build, test, clippy` AND `test-guard` are green, and it cannot be
+# pushed to `main` directly. No extra setting was needed to arrange that -- the
+# ruleset targets the default branch, not the author, and the check workflow
+# triggers on `pull_request`. Dependabot also cannot approve its own PR, which is
+# why the ruleset's required approving reviews being 0 matters here; with any
+# required approvals configured, every one of these PRs would stall.
+version: 2
+
+updates:
+  # The workspace's single root Cargo.lock. The five crates under crates/ are
+  # path dependencies of each other and are not covered separately; `directory`
+  # is the workspace root, which is where the one lockfile lives.
+  #
+  # Expect `spikes/` NOT to be covered: those crates are deliberately excluded
+  # from the workspace (root Cargo.toml), have their own lockfiles, and are
+  # archival Phase 0 experiments that must not be pulled into the product build.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+
+  # The actions used by .github/workflows/check.yml. This one is why the repo is
+  # on checkout v7.0.1 and cache v6.1.0 by hand today; from here the next major
+  # bump arrives as a PR that has to pass the same gate instead of going unnoticed
+  # until something breaks or a runtime is retired.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies

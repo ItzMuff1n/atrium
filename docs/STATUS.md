@@ -15,8 +15,10 @@ agent must never move an entry, including its own from a previous session.
 ## Current phase
 
 **The repository is at `/home/muffin/VibeCodeProjects/atrium` — GitHub
-`ItzMuff1n/atrium`, private, branch `main`, a cargo workspace with the five crates
-under `crates/` and these documents under `docs/`.** The project moved here on
+`ItzMuff1n/atrium`, PUBLIC since 18 Sep 2026 (it began private and was recreated
+public with its history rewritten to a noreply identity), branch `main`, a cargo
+workspace with the five crates under `crates/` and these documents under
+`docs/`.** The project moved here on
 18 Sep 2026 from `/home/muffin/Desktop/Nexus project`, which is kept untouched as a
 backup. **"Done" is now `scripts/check.sh` passing locally and the CI run on GitHub
 green for that commit** — not an agent's report. See `AGENT-RULES.md` §6 and "The
@@ -31,6 +33,14 @@ be read as complete.** The gate is Muffin's, and it has not been run:
 ```
 cd "/home/muffin/VibeCodeProjects/atrium/crates/watcher" && bash hand-test-2d.sh
 ```
+
+**Phase 1b is signed off again (18 Sep 2026).** It was reopened on 18 Sep 2026 by
+its own property test finding a sandbox escape; the escape, the chain-hop ruling
+and the gate extension that followed are merged, and Muffin re-ran the gate on
+merged `main` himself and reported `accepts: 53   rejects: 74` and
+`hand-test-1b: every line behaved as required`. Recorded under "Verified
+hands-on" above and in the closure note at the head of the 18 Sep 2026 entry
+below. **The phase that is now waiting on him is 2d, not 1b.**
 
 **Until that is run and he moves the entry up, Phase 2d is unfinished.** The one
 open blocker on it is not a test: `crates/watcher/.hermes/environment.json` was never
@@ -75,9 +85,12 @@ entry under "Agent-reported", and `DECISIONS.md`. **Nothing autonomous may
 exercise the shell until 2e passes.**
 
 **Phase 1b — Non-existent-path resolution. VERIFIED HANDS-ON by Muffin, 13 Sep
-2026. Signed off.** See "Verified hands-on" below for what he ran and what he
-saw. This is the phase that lets anything be created at all: Phase 1 could only
-resolve paths that already existed.
+2026, and signed off again on 18 Sep 2026 after its own property test reopened
+it.** The 18 Sep run was his and was on merged `main`: he reported
+`accepts: 53   rejects: 74` and `hand-test-1b: every line behaved as required`.
+See the 18 Sep 2026 entry at the foot of "Agent-reported, unverified" for the
+record of that run. This is the phase that lets anything be created at all:
+Phase 1 could only resolve paths that already existed.
 
 **Phase 1 — sandbox path resolution is signed off** (13 Sep 2026), and Phase 1b
 extends it. Together they are the whole of the resolver as it stands.
@@ -170,6 +183,20 @@ move in chat on 13 Sep 2026, not on an agent's judgement.
 stopped the project** — there was none.
 
 ### Phase 1b — non-existent-path resolution (Muffin, 13 Sep 2026)
+
+**Re-signed-off by Muffin, 18 Sep 2026.** Phase 1b was reopened on 18 Sep 2026
+when its own property test (`crates/resolver/tests/resolver_props.rs`) found a
+sandbox escape — a path with an absent component, then `..`, then the name of a
+symlink pointing outside the root was accepted. The fix and the chain-hop ruling
+that followed are merged (PRs #7–#10). Muffin then re-ran the gate himself on
+merged `main` and reported: **`accepts: 53   rejects: 74`** and
+**`hand-test-1b: every line behaved as required`** — exit 0, 127 lines, zero
+failures, zero escapes. The script now carries 127 lines (113 before section Q)
+and section N, the 18 Sep escape cases, is in that run. See the closure note at
+the head of the 18 Sep 2026 entry under "Agent-reported, unverified" and report
+§10 in `/home/muffin/VibeCodeProjects/atrium-fix-1b-report.md`.
+
+The 13 Sep 2026 record below is left exactly as it was written then.
 
 **This is the Phase 1b sign-off. The gate is passed.**
 
@@ -556,6 +583,11 @@ Removed from config Sep 2026. Full evidence in `pipeline-check.md` §5.
 ## Agent-reported, unverified
 
 ### Phase 1b REOPENED by the resolver's own property test, fixed, and awaiting Muffin's hand re-test (18 Sep 2026, Hermes session)
+
+**CLOSED 18 Sep 2026 by Muffin's own run.** The gate was re-run and passed; the
+sign-off entry is at the foot of this section. Everything below is the
+reopened-phase record as it stood between the property test finding the escape and
+his re-test, kept as written rather than tidied.
 
 **Phase 1b is not signed off. It was reopened on 18 Sep 2026 and this entry does
 not close it.** The line it was reopened on: a path containing a component that
@@ -1823,6 +1855,47 @@ On user confirmation, move this entry to verified hands-on; 0a done, 0b next.
 
 *(previous entry:)*
 *(empty — no code has been written)*
+
+---
+
+### Phase 1b sign-off, second time — Muffin's own run on merged `main` (18 Sep 2026, Hermes session)
+
+**This entry records Muffin's hands-on re-test, reported by him in chat. It is
+his result, not an agent's.** Phase 1b was reopened earlier the same day when the
+resolver's own property test found a sandbox escape; the fixes and the ruling
+that followed landed as PRs #7–#10 (latest on `main` at the time of his run:
+`62defc1d47481225dbb6e6b7284cfa3d9f5aaebd`, the gate extension PR #10).
+
+**What he ran**, exactly as briefed:
+
+```
+cd "/home/muffin/VibeCodeProjects/atrium/crates/resolver" && bash hand-test-1b.sh
+```
+
+**What it printed, his words, verbatim:**
+
+```
+accepts: 53   rejects: 74
+hand-test-1b: every line behaved as required
+```
+
+**Read from the script itself, not from that output:** `EXPECTED_ACCEPTS=53` and
+`EXPECTED_REJECTS=74` are declared in the script and a run whose totals differ
+exits non-zero, so the line above cannot print on a run whose counts drifted.
+127 declared lines across sections A–N and Q. The final line prints only when no
+line failed and no ACCEPT landed outside the root.
+
+**Why this is the second sign-off rather than the first.** Phase 1b's original
+sign-off (13 Sep 2026, 43 accepts / 49 rejects, 92 lines, sections A–M) stands;
+this one re-establishes it on the resolver as it is now — after the textual-mode
+escape was closed, after the chain-hop ruling made any chain that leaves the root
+at any hop a refusal, and with section N (the escape cases) and section Q (the
+chain cases) in the list. **Phase 1b is signed off.**
+
+**Left as it was, deliberately:** the older 1b entry above still says the phase is
+not signed off. It records the state between the property test finding the escape
+and this run; it was not rewritten in place, and the sign-off is recorded here
+where agents are allowed to append.
 
 ---
 

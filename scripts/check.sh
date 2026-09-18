@@ -7,6 +7,7 @@
 #   2. build  -- does it compile at all (tests included: --all-targets)
 #   3. test   -- does it behave
 #   4. clippy -- is it written well; the only advisory step
+#   5. deny   -- is it safe to DEPEND on what it depends on
 #
 # Stops at the first failure. Nothing here is optional except clippy, see below.
 
@@ -33,5 +34,22 @@ cargo test --workspace || die "cargo test --workspace"
 # style opinion, and that must not be swallowed.
 step "cargo clippy --workspace --all-targets (report-only: warnings do not fail this run)"
 cargo clippy --workspace --all-targets || die "cargo clippy --workspace --all-targets"
+
+# Supply-chain check: RustSec advisories (vulnerabilities and unmaintained crates
+# both fail), the licence allowlist, duplicate versions (warn) and sources
+# (crates.io only). Config in deny.toml. This one is a hard failure, unlike
+# clippy: an advisory is a fact about a dependency, not a style opinion, and
+# "warn only" would mean a known-vulnerable crate could be merged on a green run.
+#
+# cargo-deny is not installed by this script. Locally: `cargo install --locked
+# cargo-deny`. In CI the workflow installs a pinned version before calling this.
+# If it is missing, this says so and exits -- it does not quietly skip the check.
+step "cargo deny check"
+if ! command -v cargo-deny >/dev/null 2>&1; then
+  printf 'cargo-deny is not installed.\n' >&2
+  printf 'Install it with: cargo install --locked cargo-deny\n' >&2
+  die "cargo deny check (not installed)"
+fi
+cargo deny check || die "cargo deny check"
 
 printf '\n=== all checks passed ===\n'

@@ -4,6 +4,16 @@ version = "0.1.0"
 edition = "2021"
 description = "Atrium Phase 2d — the filesystem watcher. Observes the environment root and reports what changed."
 
+# Cargo would let this crate be published to crates.io; `publish = false` says it
+# never will be. This is load-bearing for the supply-chain gate, not bookkeeping:
+# cargo-deny's `licenses.private.ignore` only exempts a workspace member from the
+# licence check when the member is not published. Without this line the five
+# Atrium crates are reported as "unlicensed" (they legitimately carry no SPDX
+# expression -- see deny.toml), and the only way to silence that would be to
+# switch the `unlicensed` lint off for every crate, including the third-party
+# ones the check exists to catch. With it, the exemption is scoped to these five.
+publish = false
+
 # NO DEPENDENCIES, deliberately. The Linux inotify entry points are declared as
 # `extern "C"` symbols in src/lib.rs and resolved against the libc that Rust
 # already links for x86_64-unknown-linux-gnu. Nothing is fetched from a registry,
