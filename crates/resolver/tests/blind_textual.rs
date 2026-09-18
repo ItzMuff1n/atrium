@@ -407,28 +407,30 @@ fn blind_21_internal_chain_after_absent_is_accepted() {
 
 // 22. out via a link, back in via a host-side relay
 //
-// ADJUDICATED: the blind list expected REJECT, arguing the intermediate
-// location leaves the root. It gets ACCEPT, and the resolver is right by its
-// own documented rule — "containment is verified at every intermediate step"
-// is stated as resolving `..` at each step, not as refusing a traversal that
-// passes through the outside on its way back in. `canonicalize` follows the
-// whole chain at once: `hop` -> `<outside>/relay` -> `<root>`, and the walk
-// then checks the FINAL canonical location, which is `<root>` and inside. The
-// link is never followed in stages, so no intermediate check exists to fail.
+// FLIPPED 18 Sep 2026 (ruling, docs/DECISIONS.md). This case was adjudicated
+// ACCEPT when it was written, on the ground that the resolver followed the
+// whole chain with `canonicalize` and checked only where it landed: the
+// intermediate location was never a step the walk took, so no intermediate
+// check existed to fail, and the final location was inside the root.
 //
-// This is a genuine design question, not a bug: a stricter rule would refuse
-// any path whose chain momentarily leaves the root. That rule is not the one
-// written down, and the case that IS covered — a chain that ENDS outside — is
-// refused (asserted below). Recorded in the report as an open question rather
-// than silently resolved.
+// It was recorded as an open design question rather than silently resolved.
+// The ruling settles it the other way: a chain that leaves the root at ANY hop
+// is refused, even when it comes back in, because containment is checked at
+// every step and the path passes through a location that is outside the
+// environment. Strictness wins. The resolver now reads each hop with
+// `read_link` and refuses the one that leaves.
+//
+// The one assertion that changed is the out-and-back ACCEPT below; it is
+// listed in the PR and the report. The rest of the case is unchanged.
 #[test]
-fn blind_22_out_then_in_via_relay_lands_inside_and_ending_outside_is_refused() {
+fn blind_22_out_then_in_via_relay_is_refused_and_ending_outside_is_refused() {
     let f = standard("b22");
     symlink(&f.root, f.outside.join("relay")).unwrap();
     f.file("ok.txt", b"ok\n");
     f.link("hop", &f.outside.join("relay"));
-    // A chain that lands back inside is accepted, and the result is inside.
-    f.accepted_inside("/hop/ok.txt");
+    // The chain leaves the root at its first hop; coming back in does not
+    // save it (ruling, 18 Sep 2026). This line was ACCEPT before the ruling.
+    f.refused("/hop/ok.txt");
     // A chain that ENDS outside is refused — that is the rule that exists.
     f.link("hopout", &f.outside.join("relay"));
     f.link("relay2", &f.outside);

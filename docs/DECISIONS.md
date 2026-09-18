@@ -854,6 +854,49 @@ conflict: existence decides which one applies.
 path — traversable as text, contained at every step. Verified contained by probe,
 13 Sep 2026.
 
+**5. A symlink chain that leaves the root at ANY hop is refused, even if it ends
+inside the root.** *(Ruling by Muffin, 18 Sep 2026. The reason is his, verbatim:
+"the resolver's own rule says containment is checked at every intermediate step,
+and an out-and-back chain breaks that. Strictness wins.")*
+
+The shape: `<root>/back -> <outside>/relay -> <root>`. The first hop leaves the
+environment; the second lands back inside it. The old resolver followed the whole
+chain with `canonicalize`, which reports only where it lands, so the walk checked a
+final location that is inside the root and **ACCEPTed**. The departure was never a
+step, so nothing checked it.
+
+Under this ruling it is **REJECTed**. Containment is checked at every step, and the
+chain passes through a position that is outside the environment on its way back in.
+
+**What this does and does not change.** A chain entirely inside the root is still
+ACCEPTed. A single link whose target is outside is still refused, for the reason it
+always was (ruling K.1a). What changes is only the out-and-back shape: it was the
+one case where the walk left the root and nothing noticed.
+
+**Recorded as ruling K.1a — a dangling link's target counts, whether or not the
+target exists.** A link whose target is outside and *absent* is refused on the same
+ground: the departure is judged where the target lands, and lands outside.
+
+**The ancestor clarification (same ruling, 18 Sep 2026).** Spelling one target
+string may pass through the root's ancestors — `/`, `/tmp`, the directory the root
+sits in — because that is how an absolute address is written. A target that points
+inside the root is spelled `<root>/home/documents`, and the host paths above the
+root are part of the spelling, not a departure.
+
+But **where a hop ENDS must be inside the root or be the root.** A link whose target
+resolves to an ancestor — `<root>/a -> /home`, or the root's own parent — has left
+the root, and the path is **REJECTed even if later components lead back in**. The
+two are different questions: passing through an ancestor while spelling an
+inside-pointing target is ordinary; *landing* on one is leaving.
+
+**Test home.** `crates/resolver/tests/regression_chain_hops.rs` — the out-and-back
+shapes (`out_and_back_chain_is_refused`, `hop_out_in_the_middle_of_a_longer_chain_
+is_refused`), the ancestor shapes (`a_hop_that_lands_on_an_ancestor_of_the_root_is_
+refused`, `an_absolute_target_spelled_through_ancestors_and_landing_inside_is_
+accepted`), and the controls that must not change. One existing assertion was
+flipped under this ruling: `blind_textual.rs` case 22, which was adjudicated ACCEPT
+when written (its comment there records the reasoning and the flip).
+
 ---
 
 ## Phase 2d — the watcher
