@@ -1,0 +1,9 @@
+[package]
+name = "bridge-rust"
+version = "0.1.0"
+edition = "2021"
+
+# Phase 0a spike: no async runtime, no TLS, no auth. Throwaway code.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,179 @@
+# Phase 1 — verification evidence
+
+Verbatim output of every check, run 12 Sep 2026 from
+`/home/muffin/Desktop/Nexus project/resolver`.
+
+Project: `atrium-resolver`, a Rust command-line tool. There is no server, no
+UI, no long-running process — build and test are the whole verification.
+
+---
+
+## 1. `hermes verify --json` — PASS
+
+The project's own verification recipe. Recipe loaded from
+`.hermes/environment.json` (`build: cargo build`, `test: cargo test`).
+
+```
+recipe: atrium-resolver (CLI, no server)
+ok    : True
+  build  exit=0 ok=True
+  test   exit=0 ok=True
+readiness: None
+```
+
+**Note on an earlier failing run.** The first `hermes verify` run reported
+`ok: false`. The build and test phases both passed; the failure was the
+readiness poll, which sat waiting for a web server at `http://127.0.0.1:8000/`
+for 60 seconds and got `Connection refused`. That poll was testing something
+this project does not have. The auto-detector saw `Cargo.toml` and guessed
+`cargo run` was a server start command; `atrium-resolver` with no arguments
+prints its usage and exits. The saved recipe has had `start` set to `null`, and
+`hermes verify` now passes. **This was a fault in the detected recipe, not in
+the resolver.**
+
+---
+
+## 2. `cargo test` — 11/11 PASS
+
+```
+running 11 tests
+test section_b_absolute_host_paths ... ok
+test section_c_relative_paths ... ok
+test section_a_plain_traversal ... ok
+test resolve_never_mutates ... ok
+test section_f_unicode_and_lookalikes ... ok
+test section_h_nasty_combinations ... ok
+test section_e_separator_normalisation ... ok
+test section_g_length_and_shape ... ok
+test section_d_symlinks ... ok
+test acceptance_stays_inside_root ... ok
+test section_i_must_be_accepted ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+```
+
+These are the tests the subagent wrote. A test the author wrote shares the
+author's assumptions, so they are weak evidence on their own — they are listed
+here for completeness, not as the reason to trust the resolver.
+
+---
+
+## 3. `bash hand-test.sh` — PASS
+
+Every line of `attack-list.md`, sections A–I, against a fresh fixture root,
+after the list's contradictions were corrected.
+
+```
+accepts: 24   rejects: 67
+hand-test: every line behaved as required
+```
+
+91 lines, zero `FAIL`, zero escapes. The script independently re-checks every
+ACCEPT against the root prefix — it does not trust the resolver's own verdict
+about containment.
+
+---
+
+## 4. `bash probe-parent.sh` — PASS
+
+The parent's own probes, written after reading the resolver source. Main
+purpose: the prefix-sibling attack — a real directory `/tmp/atrium-probe-evil`
+whose *name* shares the root's name as a string but which is not inside it.
+This is the classic failure of a `path.starts_with(root)` check done on a root
+path without a separator.
+
+```
+/link-to-sibling                    REJECT  symlink points outside root
+/link-to-sibling/secret.txt         REJECT  symlink points outside root
+/../atrium-probe/home/documents     REJECT  climbed above root
+/home/documents/./../../.           ACCEPT  /tmp/atrium-probe        (root itself)
+/link-to-inside/../..               ACCEPT  /tmp/atrium-probe        (root itself)
+```
+
+Both ACCEPTs land on the root directory itself, which is contained. Zero
+escapes.
+
+---
+
+## 5. `bash probe-blind.sh` — PASS
+
+The §12 blind attack list's novel lines, with the fixtures they assume planted
+by hand: symlinks to `/proc/self/root`, `/proc/self/cwd`, `/dev/stdin`; a
+self-looping symlink; a symlink in the *middle* of a real directory path; the
+prefix-sibling path.
+
+```
+escapes or hangs: 0
+probe-blind: no escapes, no hangs
+```
+
+Highlights:
+
+```
+/link-out/passwd              REJECT  symlink `/link-out` points outside root (target `/etc`)
+/d/mid/passwd                 REJECT  symlink `/d/mid` points outside root (target `/etc`)
+/loop/loop/loop/x             REJECT  symlink loop (OS reported too many levels)
+/X-procroot/etc/passwd        REJECT  symlink `/X-procroot` points outside root (target `/`)
+/X-cwd/../../etc              REJECT  symlink points outside root
+/X-stdin                      REJECT  symlink points outside root (target `/dev/null`)
+$HOME/../../etc/passwd        REJECT  relative path
+~root/.ssh/id_rsa             REJECT  relative path
+/%2e%2e%2f%2e%2e%2fetc%2fpasswd  REJECT  does not exist inside root
+/..;/..;/etc/passwd           REJECT  does not exist inside root
+```
+
+Also re-confirmed, unchanged: `/home/documents/notes.txt/` (trailing slash on a
+file) is **ACCEPTED** where POSIX says it should fail with ENOTDIR. Contained,
+so cosmetic, but still a deviation and still recorded.
+
+---
+
+## 6. `./target/debug/atrium-resolver demo` — PASS
+
+```
+demo: all cases behaved as required
+```
+
+Exit 0. The demo builds its own fixtures in a temp dir and cleans up after
+itself.
+
+---
+
+## Scripting bug found and fixed during this work
+
+The first version of `hand-test.sh` generated the long-path test case with
+`printf '/%0.sa' $(seq 1 300)`, which repeats the whole string `/a` three
+hundred times — a 600-character path of 300 `/a` components — instead of
+building one 300-character name. It was testing the wrong thing, and the
+rejection it produced (`/a does not exist`) came from the missing first
+component, not from any length handling.
+
+Fixed to `"/$(printf 'a%.0s' $(seq 1 300))"`. Re-run output now:
+
+```
+301-char single component   REJECT  OS refused: File name too long (os error 36)
+400-char / 200 components   REJECT  `/a` does not exist inside root
+256-char single component   REJECT  `/c` does not exist inside root
+255-char single component   REJECT  `/b` does not exist inside root
+```
+
+The OS-level length rejection is now genuinely exercised, and the resolver
+returns its own named reason rather than leaking an error.
+
+---
+
+## What is NOT verified
+
+**Muffin's hands-on pass.** Everything above is agent-run. BUILD-PLAN requires
+the *user's* verification for Phase 1, and no amount of agent-side running
+substitutes for it. Phase 1 remains unsigned.
+
+**The three NUL-byte lines in section F.** A command-line argument is
+terminated by a NUL byte, so the shell refuses them before `atrium-resolver`
+sees the string. They are covered only by `cargo test`
+(`section_f_unicode_and_lookalikes`, `section_h_nasty_combinations`), which
+calls the resolver in-process and can hold a NUL. Recorded in `attack-list.md`
+section F.
+
+**Whether a replacement after streaming reaches the screen** — unrelated to
+Phase 1; noted only so it is not lost.

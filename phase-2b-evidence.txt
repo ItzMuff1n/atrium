@@ -1,0 +1,138 @@
+ATRIUM — PHASE 2b EVIDENCE (parent session, 14 Sep 2026)
+=========================================================
+Every value below was observed by running the command shown. Nothing here is
+relayed from the build child, which was cut off (see §5).
+
+1. THE BUILD CHILD
+------------------
+dispatch id : deleg_3ca1b68b (leaf, kimi-k3)
+outcome     : TIMEOUT at 900s / 44 api calls — no report produced
+transcript  : ~/.hermes/cache/delegation/live/deleg_3ca1b68b/task-0.log
+last act    : still editing hand-test-2b.sh; README.md never written
+consequence : nothing it claimed is evidence. All verification below is mine.
+
+2. INDEPENDENT BLIND ATTACK LIST
+--------------------------------
+dispatch id : deleg_ade9c6f9 (leaf)
+outcome     : completed, 48.9s
+tool calls  : exactly one (write_file -> /tmp/atrium-blind-2b-child.md)
+              verified by grepping the transcript for '| -> ' (one line)
+file        : blind-attack-list-2b.md (verbatim copy)
+sha256      : 8818f248199b07f8801a308558b3c28ec2dcec8fb46a8645b9387805a5048c16
+              (source and copy hashes match; diff empty)
+size/lines  : 13200 bytes, 104 lines, 62 items in 10 groups
+contamination: no project files read. Unverifiable limit, same as Phases 1/1b/2a:
+              proves it did not READ files, not that the model did not already
+              know Atrium. The 4 grep hits for project-ish words are my own
+              dispatch wording ("the existing path resolver") coming back.
+result      : NO new promise, but several mechanism-level gaps the first list had
+              missed -> folded into attack-list-2b.md §N (N.1-N.23).
+
+3. THE DEFECT §N.8 FOUND (the reason the blind list earned its place)
+--------------------------------------------------------------------
+What: a command that backgrounds a process inheriting its output pipes
+      returns at once, but the survivor holds the pipe write end open. The
+      runner joined its two reader threads, so it waited on the SURVIVOR's
+      lifetime, not the command's — past its own time limit, indefinitely.
+
+Observed BEFORE the fix (bash /tmp/probe-n.sh, outer guard 12s):
+  $ atrium-shell run --root $ROOT --cwd /home/work --timeout-ms 2000 -- sh -c '(sleep 30) &'
+  observed: rc=124   elapsed=12002ms
+  verdict : HUNG — exceeded the 12s outer guard.
+
+Observed AFTER the fix (same command):
+  observed: rc=0   elapsed=222ms
+  output  : OK status=exit 0 stdout=0 bytes stderr=0 bytes
+
+Fix: do not block on the readers. Poll is_finished() for a 200ms grace
+(READER_GRACE in src/lib.rs), then report what was captured and return. In the
+ordinary case (child exited, pipes at EOF) is_finished() is already true and
+nothing is delayed. The reader threads are detached, not killed.
+
+The survivor is NOT killed — deliberate, and documented in README.md (a process
+group kill is containment, which is §2e). Observed: `sleep 30` still alive after
+the runner returned.
+
+4. THE THREE PROOFS THE BRIEF REQUIRES (proof the harness can fail)
+-------------------------------------------------------------------
+PROOF 1 — break one expectation. Broke J.5 (expected exit 4, runner gives 3):
+  EXIT CODE: 1
+  [FAIL] [B.10] exit 3 not reported: OK status=exit 3 stdout=0 bytes stderr=0 bytes
+  [FAIL] [J.5]
+  hand-test-2b: 2 FAILED
+  -> the harness reports FAIL and exits non-zero.
+
+PROOF 2 — the escape detector must fire (Phase 2a took this on trust at first
+and it turned out to need proving). Injected a direct change to the outside
+sentinel, syntax-checked the harness, ran it:
+  EXIT CODE: 1
+  OUTSIDE TOUCHED count: 1
+  !! OUTSIDE TOUCHED at PROOF2 deliberate change to the outside sentinel
+  !! OUTSIDE DIRECTORY CHANGED OVER THE RUN
+  hand-test-2b: 2 FAILED
+  -> the detector fires on a real change to the outside directory.
+  NOTE, disclosed: my first attempt at this proof was a FALSE PASS. The
+  injected line broke the script's quoting (syntax error near `(`), so the
+  harness aborted at exit 2 at the end of the run; my check only looked at
+  "rc != 0" and called it OK. Corrected by syntax-checking first (bash -n)
+  and asserting the OUTSIDE TOUCHED count, not just the exit code. Same class
+  of mistake as 2a's flawed detector negative test, and caught the same way.
+
+PROOF 3 (mine, beyond the brief) — is the §N.8 cargo test load-bearing?
+  Reverted the reader-join to the original blocking join, rebuilt, ran:
+  test n8_a_survivor_holding_the_pipes_does_not_extend_the_run ... FAILED
+  panicked: "the runner waited on the survivor, not the command: took 12.001763854s"
+  -> without the fix the test fails by taking the grandchild's lifetime.
+  Source restored byte-exact (sha256 compared).
+
+PROOF 4 (mine) — is the disclosure test load-bearing?
+  Replaced the re-wording with a verbatim pass-through, rebuilt, ran:
+  refusals for "/trap/escape" disclosed real path /tmp/atrium-2b-test-...
+    got: Rejected: symlink `/trap/escape` points outside the environment root
+         (its target is `/tmp/atrium-2b-test-...-outside`)
+  -> the test fails and shows the leak when the fix is absent.
+  Source restored byte-exact.
+
+5. PARENT VERIFICATION — FINAL STATE (all observed, cd shell/)
+--------------------------------------------------------------
+cargo fmt --check     -> FMT_CLEAN (rc 0)
+cargo build           -> Finished, rc 0
+cargo test            -> 45 passed; 0 failed (36 from the child + 9 mine)
+hermes verify --json  -> ok: True
+bash hand-test-2b.sh  -> exit 0
+                         lines run: 78   failures: 0
+                         holes demonstrated (expected, 2e's): 5
+                         hand-test-2b: every line behaved as required
+escape detector       -> 0 outside changes, 0 host /etc/passwd changes
+resolver/ mtimes      -> unchanged (src/lib.rs 2026-09-13 21:30:52)
+fileops/ mtimes       -> unchanged
+resolver verify       -> ok: True
+fileops  verify       -> ok: True
+
+6. WHAT I CHANGED IN THE CHILD'S CODE
+-------------------------------------
+1. src/lib.rs — the N.8 defect fix (grace-period reader collection) plus the
+   READER_GRACE constant and its explanation. This is the only behavioural
+   change to the child's code.
+2. tests/shell_tests.rs — 9 tests added: n8 (the fix), n5 (limit vs survivor),
+   n10 (cap boundary), n12 (forged status text), n13 (not a tty), n1_to_n4
+   (spawn refusals distinguishable, none is 127), n14_to_n16 (argv fidelity),
+   n18 (cwd spellings), n_disclosure (no real path in any refusal).
+3. hand-test-2b.sh — §N section added (18 gate lines + recorded lines). The
+   child never saw §N: it was written while the child was running.
+4. README.md — written from scratch; the child never got to it.
+
+7. KNOWN LIMITS, RECORDED NOT HIDDEN
+------------------------------------
+- The §G hole is real and demonstrated: a command can reach the host. 5 lines
+  marked HOLE. That is §2e, not a 2b defect.
+- A command can print the sandbox's real on-disk path (§A.8/§H.4). The runner
+  does NOT redact command output — redaction would corrupt data. §2e closes it
+  by removing the path from the command's view.
+- Survivors are not killed (above).
+- §K symlink-object limitation, §N.19 TOCTOU, §N.21 resources, §N.22
+  concurrency semantics, §N.23 app-state-in-root: all recorded, none 2b's.
+- §N.17 non-UTF-8 args are not representable (API takes String) — answered by
+  the type, not tested.
+- The child's `hand-test-2b.sh` reported "59 lines" when it died; it had never
+  run §N and had not completed its own proofs. The 78-line figure is mine.

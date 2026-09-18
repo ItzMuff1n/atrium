@@ -1,0 +1,281 @@
+# Phase 2d — the filesystem watcher: command-by-command evidence
+
+**Written 15 Sep 2026 by the Hermes session.** Companion to the `STATUS.md` entry.
+Everything here is **observed output**, unless a line says `inferred`. Where a
+claim rests on reasoning rather than a run, it says so.
+
+Built **in-session by the parent**, not delegated. Reason, observed: both 14 Sep
+build children died at the 900 s cap with no report (2a's on an HTTP 429 quota
+wall, 2b's on `exit_reason=timeout` after 44 API calls) and each cost a full parent
+salvage pass; 2c was built in-session for the same reason and needed none. The
+model cap was probed clear first (`kimi-k3`, HTTP 200, 0.84 s).
+
+---
+
+## 1. The kernel facts, measured before the spec was written
+
+**This is the first attack list in this project whose kernel facts were measured
+rather than reasoned.** Nine probe programs, no project file touched; every one
+below is a quoted observation. That ordering matters: `attack-list-2d.md` was
+written *after* these and *before* the code, so the spec could not have been
+fitted to the implementation.
+
+| Probe | Question | Observed result |
+|---|---|---|
+| 1 | Can inotify be driven with no dependency at all? | Yes — `extern "C"` declarations against the already-linked libc. `watch descriptor = 1`. |
+| 1 | Is inotify recursive? | **No.** A file created inside a subdirectory produced no event on the parent's watch. |
+| 2 | `IN_DONT_FOLLOW` on a symlink to a directory | **Without it the kernel follows the link and watches the target** — a write outside the root was reported (`CREATE created-after-watch.txt`). With it, the add is refused. This is the disclosure-defect shape. |
+| 2 | A directory with mode `000` | `inotify_add_watch` refused: `errno 13 EACCES`. |
+| 2 | Three writes to one file | `MODIFY, CLOSE_WRITE` ×3. |
+| 3 | Non-UTF-8 name bytes | Arrive intact: `b"bad-\xff\xfe-name.txt"`; lossy form is `bad-??-name.txt`. |
+| 3 | 500 files created in a burst | **500 `CREATE` records.** The kernel does not coalesce across entries. |
+| 4 | Queue overflow | **`Q_OVERFLOW` with `wd = -1`.** Forced at 300,000 creations, never drained: **16,385 records — 8,192 `CREATE`s, then the overflow record, then nothing.** Everything after is lost with no trace of which. |
+| 4 | A watched directory renamed | The renamed directory's **own `wd` keeps reporting**: `wd=2 CREATE name="after.txt"` arrived **on the old wd number**. A `wd` follows an inode, not a path. |
+| 4 | `mv d1/f.txt d2/f.txt` | `wd=1(d1) MOVED_FROM cookie=123063` and `wd=2(d2) MOVED_TO cookie=123063` — **one cookie, two different watches**. Pairing must be by cookie, not per-watch. |
+| 4 | The root replaced by a rename | `ATTRIB`, `DELETE_SELF`, `IGNORED`, then **nothing** — a later write produced **zero events**. A dead watch looks exactly like a quiet tree. |
+| 5 | **A watched subtree moved OUT of the root** | **It keeps every watch and keeps reporting.** Writes made outside the root then arrived on those wds (`wd=3(inner) CREATE name="after.txt"`). A watcher trusting its stale table would name an **in-root path for an outside change.** |
+| 5 | Hard link written through an out-of-root name | **Zero events.** The change is invisible — the 2a/§N channel, in the watcher. |
+| 5 | Watch limits | `max_user_watches` = **300000**, `max_user_instances` = **2048**, `max_queued_events` = **16384**. Cost: **2461 directories → 2461 watches in 4.82 ms**. |
+| 6 | A directory and its children moved out, then written to | Still reporting through the old wds (5 events). The wds **can** be removed. |
+| 6 | A watched tree deleted | `DELETE_SELF`, `IGNORED` per directory, children first. `rm_watch` on the dead wd → `errno 22`. |
+| 7 | The actual reduction: one open, 10 chunks | **One `MODIFY`.** The kernel coalesces within one open. |
+| 7 | `dd` of 8 MiB | **One `MODIFY`.** |
+| 7 | Three separate open/close cycles | **Three `MODIFY`, three `CLOSE_WRITE`.** |
+| 9 | Open+write **before** a watch, close **after** it | **`mask = 0x8 CLOSE_WRITE` alone** — no `IN_CREATE`, no `IN_MODIFY`. |
+| 9 | A complete open/write/close before the watch | **Nothing at all.** A finished write cannot leak into a later report. |
+
+## 2. Parent verification, all observed 15 Sep 2026
+
+Real output, not summary.
+
+- `cargo fmt --check` → **clean** (rc 0).
+- `cargo build` → exit 0, no warnings.
+- `cargo test` → **42 passed, 0 failed** (32 in `watcher_tests.rs`, 10 in
+  `probe8_blind_list.rs`).
+- `bash watcher/hand-test-2d.sh` → **rc 0, 16 lines, 0 failures, 0 outside
+  touches, 0 root disappearances, 0 real-path leaks.**
+- **20 consecutive full-suite runs, 0 failures.** Before the fix in §5, the suite
+  failed **3 times in 22 runs**.
+- The harness's **rebuild guard was exercised deliberately**: `touch src/lib.rs`,
+  then the run — it printed `building (a source file is newer than the binary…)` and
+  recompiled. *2c recorded that its own guard had never been exercised in either
+  pass; this one was watched firing.*
+
+## 3. Three defects the build found in itself, and how each was proven
+
+Each of these was found by **running something**, and each fix was proven
+load-bearing by reintroducing the defect and watching a specific check fail.
+
+### 3.1 A watched subtree moved *out of* the root kept reporting, naming an in-root path
+
+**The worst class of defect in this phase.** Observed in probe 5, then reproduced
+as a test. With a stale `wd → path` table the watcher reported
+`CREATE /home/documents/sub/deep/host-side.txt` for a file that lived **fully
+outside** the environment — an invented change in the sandbox's own view.
+
+*Fix:* `resync` re-derives every watch's path **from the tree by inode**, and a
+watch whose directory is no longer anywhere inside the root is **removed and
+reported** (`GONE … no longer inside the environment (deleted, or moved out)`).
+
+*Proof it is load-bearing:* the resync was disabled and the test re-run —
+
+```
+activity OUTSIDE the root was reported as an in-root change:
+["CREATE   /home/documents/sub/deep/host-side.txt",
+ "MODIF    /home/documents/sub/deep/host-side.txt"]
+```
+
+Source restored byte-exact afterwards (sha256 compared).
+
+### 3.2 A populated subtree moved *into* the root was watched only at its top level
+
+**Found by the independent blind list (§1.3 of `blind-attack-list-2d.md`).** `mv
+bigdir/ root/` delivered one `MOVED_TO`; the code added a single watch to the top
+and nothing below it, so every file inside was **invisible forever** — the tree
+view shows a populated folder as one empty directory, and nothing ever re-walks it.
+
+Observed before the fix: after writing at three levels of the moved-in tree, the
+only record was `CREATE /home/incoming/top2.txt`. Nothing for `lvl2/` or
+`lvl2/lvl3/`.
+
+*Fix:* walk the moved-in subtree, not just the top.
+
+*Proof it is load-bearing:* the fix was reverted and the test re-run —
+
+```
+level 2 of the moved-in tree is NOT watched — the move-in only attached a
+watch to the top directory: ["CREATE /home/incoming/top2.txt", "MODIF …"]
+```
+
+### 3.3 The header line printed the root's real on-disk path
+
+**Found by this phase's own harness, on its first run** — `!! REAL PATH LEAKED
+(A) # watching /tmp/atrium-2d-root (5 directories)`. `DESIGN.md` §3.1 says the
+agent never learns the real path exists; `attack-list-2d.md` §H.1 checks every
+default-output line for it.
+
+*Fix:* the default output shows `/` for the root; the real path appears only under
+`--show-real`.
+
+## 4. Three defects the harness found in the harness — stated because they are the point
+
+A harness's own bugs are indistinguishable from a product's, and the first versions
+of this one had two:
+
+1. **It built a fixture inside the sentinel directory** (`outside/incoming`), so the
+   move-in test made its own outside listing change and reported `!! OUTSIDE
+   TOUCHED` six times. Fixed with a third, separate staging directory: the outside
+   directory is a sentinel and nothing else.
+2. **It wrote into the outside directory before the baseline was taken**, so the
+   `D2` symlink check compared a listing it had already changed. Fixed by
+   re-baselining inside the same block that builds the fixture.
+
+Both are recorded rather than tidied away, for the same reason
+`attack-list-2a.md` §C.12 is: an expectation that fails for the wrong reason and a
+harness that passes for the wrong reason are the same defect.
+
+## 5. A flake, chased to the kernel, and the boundary it exposed
+
+**This is the most interesting thing in the phase and the one most likely to be
+misread, so it is written out in full.**
+
+`b5_reading_a_file_is_not_a_change` failed **once in 8** consecutive suite runs,
+then **3 times in 22**, reporting `Modified { path: "/home/documents/notes.txt" }`
+in a window where nothing wrote the file. `d4` saw the same spurious record.
+
+**What it was not.** Measured, not assumed:
+
+- Not a test-environment write: the file's **content, length and mtime were all
+  unchanged** — mtime identical to the nanosecond — and the inode unchanged.
+- Not shared fixture directories: 27 fixture names, all distinct; no
+  `test-b5-*`/`test-d4-*`/`test-c4-*` collisions ever observed.
+- Not a wrong path reconstruction: the table's path for the watch matched the
+  reconstructed path in every traced instance.
+
+**What it was.** The full event mask gave it away: the spurious record arrived as
+**`mask = 0x8` alone** — `IN_CLOSE_WRITE` with no `IN_CREATE` and no `IN_MODIFY`.
+Legitimate writes always arrived as `CREATE` → `MODIFY` → `CLOSE_WRITE`.
+
+Probe 9 then settled the mechanism by construction:
+
+```
+=== 1) full open+write+close BEFORE the watch is placed ===
+  after add_watch (wd=1): 0 event(s)
+  => NOTHING: a close before the watch is never delivered
+
+=== 2) open+write BEFORE the watch, close AFTER it ===
+  after the close: 1 event(s)
+    mask=0x8 [CLOSE_WRITE] name="closed-after.txt"
+  => CLOSE_WRITE ALONE: this is the straddle — mask 0x8 with no MODIFY
+```
+
+`inotify` delivers the three events of one write at three different moments, and a
+watch can land **between** them. A handle opened before the watch, closed after it,
+delivers a bare `IN_CLOSE_WRITE`.
+
+**The one thing a fix can do, and it was done:** `Watcher::start` now **flushes the
+queue**, discarding kernel events already in flight when the watches were placed.
+Those events describe changes that happened while the walk ran; reporting them later
+attributes a change to a moment it did not happen in.
+
+**The boundary that remains, stated rather than papered over:** a close that lands
+*after* `start` returns **is reported**. The bytes were written before the watcher
+existed and the event happened after it, and the two are indistinguishable from a
+write that happened a microsecond ago. Since this phase's whole purpose is not
+losing changes, it is reported; suppressing it would be dropping a real change.
+Test `j9` **pins that boundary** so it cannot drift silently, and `b5`/`d4` — whose
+claim is "nothing appeared" — absorb exactly that one startup artifact through a
+documented `settle_after_start`.
+
+**Honest limitation of the fix, and it is a real one.** The flush only reaches
+events *already delivered to the queue* at that moment. A close that arrives during
+the tiny window between the flush and the caller's first `wait` is still reported
+(the code flushes *before* `start` returns, so the queue must stay empty for that
+gap to matter). **20 consecutive suite runs and 25 `j9` rounds produced no
+recurrence**, which is consistent with the fix working and does not prove the window
+is closed. The alternative would be to redact the record — deleting the `path` —
+which this phase declines because a change event nobody can locate is close to
+useless, and the attack list is explicit that a record names where.
+
+## 6. The independent blind list
+
+`deleg_577c62bd` (leaf, `kimi-k3`, 79.75 s, 2 API calls) was given a plain-words
+description and nothing else. Observed from the live transcript: **exactly one tool
+call — the `write_file` — no reads, no search, no skill, no project-tree access.**
+
+Preserved verbatim as `blind-attack-list-2d.md` — 27,046 bytes, sha256
+`fadac2fac005310e4b822ec7d415b4de60e5c89eef30bdb787e93d968033b005`, byte-identical
+to the child's file.
+
+Compared **by mechanism, not by text**. Result, honestly stated: most of its ~30
+items were already covered here or already excluded by design, and **it found two
+things worth acting on**:
+
+- **§1.3, a populated subtree moved into the root** — **a real defect**, §3.2 above.
+- **§1.2, a new directory's contents** — the same shape at one level down; it
+  prompted walking on `CREATE` as well as `MOVED_TO`, which closes the window
+  further. Recorded as a prompt rather than a find, because the race was already
+  known and stated (§D.3).
+
+Its mechanisms raised that this design already excludes, with the reason kept
+visible in `attack-list-2d.md` §M rather than argued away in the chat: mmap
+writeback (`IN_MODIFY`/`CLOSE_WRITE` timing is the kernel's, not ours — §1.4), mount
+points inside the root (2e's own-mount requirement; noted as a real 2e input —
+§1.5), watch-descriptor reuse cross-labelling (tested by `blind_4_3`; the table is
+keyed **by inode**, so a recycled `wd` cannot carry a stale path — §4.3), and
+descriptor/instance limits (measured, §1 table — §4.1/§6.2).
+
+**Its own honest section is preserved too** — eight items it could not settle
+without a machine, several of which this phase answered by measurement (the queue
+threshold, mmap timing) and several of which are still open (the mount stack,
+whether device nodes are creatable in the sandbox).
+
+**Unverifiable limit, stated:** the contamination check proves the child read no
+project file. It does not prove the model had no prior knowledge of Atrium. Same
+caveat as every earlier blind list.
+
+## 7. The lines the blind list added, run against the built code
+
+`tests/probe8_blind_list.rs` — ten mechanisms from the blind list, as tests. Two
+failed on first run; both are recorded above or below with the reason.
+
+| Test | Blind item | Result |
+|---|---|---|
+| `blind_1_3_…moved_into_the_root` | §1.3 | **FAILED first → real defect, fixed (§3.2)** |
+| `blind_3_2_a_deep_tree_is_reported_intact` | §3.2 | Failed on first run — **the test's own bug**: it wrote the file *before* starting the watcher, so zero events was correct. Fixed to start first; then passed. |
+| `blind_4_3_rapid_directory_recreation` | §4.3 | Passed — events are never labelled with a recycled descriptor's old path |
+| `blind_5_4_no_error_path_prints_the_real_root` | §5.4 | Passed — the error path names the virtual path, never the root |
+| `blind_5_5_directory_swapped_for_symlink` | §5.5 | Passed — nothing outside is reported |
+| `blind_5_6_a_fifo_does_not_wedge_the_watcher` | §5.6 | Passed — the watcher never opens a special file, so it cannot block |
+| `blind_1_8_atomic_replace` | §1.8 | Passed — reported, and the record names the changed file |
+| `blind_1_7_dir_renamed_before_processing` | §1.7 | Passed — no record names a path that never existed |
+| `blind_2_3_delete_and_recreate_a_directory` | §2.3 | Passed — the recreated path keeps reporting |
+| `blind_6_2_a_wide_tree_covers_every_directory` | §6.2 | Passed — 600 directories, every one watched, no silent gap |
+
+## 8. What was deliberately not done, and what is owed to later phases
+
+- **No resync after an overflow.** The gap is reported; nothing is guessed.
+  `attack-list-2d.md` §L.2.
+- **The create-then-write race in a brand-new directory** is reduced, not closed.
+  §L.1.
+- **No hard-link protection.** It is 2e's, and test `i8` asserts the current
+  behaviour so 2e's change is visible when it lands. §L.3.
+- **No de-duplication** against the file-operation layer's own effects. Phase 3.
+- **No effects, no SQLite, no log.** Phase 3.
+- **No cage** (2e), **no gate** (Phase 4), **no UI**, **no agent loop** (Phase 5).
+- **`watcher/.hermes/environment.json` was not written.** The write was blocked by
+  the agent-instruction-file guard and the approval prompt timed out, which is not
+  consent, so it was not retried or routed around. Consequence: `hermes verify`
+  needs `--skip-start` for this crate. **The fix belongs to Muffin** — one file,
+  copied from `snapshot/.hermes/environment.json` with the name changed. Without it
+  `hermes verify` fails its readiness phase on a CLI that has no server, which is
+  the documented `HANDOFF.md` §5 behaviour, not a code fault.
+
+## 9. Frozen files untouched
+
+`resolver/`, `fileops/`, `shell/` and `snapshot/` sources all carry mtimes earlier
+than this phase's work (checked; `resolver/src/lib.rs` 2026-09-13 21:30,
+`fileops/src/lib.rs` 2026-09-14 18:19, `shell/src/lib.rs` 2026-09-14 19:25,
+`snapshot/src/lib.rs` 2026-09-14 20:36). No instrumentation and no negative-test
+markers left in `watcher/src/` or `watcher/tests/` — the env-gated traces were
+removed and `grep -c eprintln` returns 0 in both.

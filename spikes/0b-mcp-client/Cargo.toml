@@ -1,0 +1,13 @@
+[package]
+name = "mcp-client-spike"
+version = "0.1.0"
+edition = "2021"
+
+# Phase 0b spike: the Rust MCP SDK (rmcp) against the official `everything`
+# reference server over stdio. Throwaway code — proves the SDK works before
+# anything real depends on it. BUILD-PLAN 0b / DECISIONS.md §MCP.
+[dependencies]
+# Latest stable rmcp per the SDK repo (v3.3.0, released 2026-09-10).
+rmcp = { version = "3", features = ["client", "transport-child-process", "transport-io"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process"] }

@@ -1,0 +1,27 @@
+[package]
+name = "atrium-snapshot"
+version = "0.1.0"
+edition = "2021"
+
+# Dependencies: NONE — not even a path reference to our own crates.
+#
+# This is deliberate and differs from fileops/ and shell/ on purpose. Those two
+# resolve virtual paths, so they depend on `atrium-resolver`. This crate resolves
+# nothing: it copies a real directory to a real store, both handed to it by the
+# app. There is no virtual path anywhere in it, and if one appears, agent input
+# has crept into a tool that must not be agent-facing
+# (DECISIONS.md — "Snapshots are a plain copy, not copy-on-write", and
+# attack-list-2c.md §H.1).
+#
+# SHA-256 is implemented in src/sha256.rs rather than pulled from a crate: adding
+# a registry dependency is a stop-and-ask (AGENT-RULES.md §5), and the record's
+# checksums are what make "a damaged snapshot is never restorable" true
+# (attack-list-2c.md §F.2), so a weak hash was not an option either.
+
+[lib]
+name = "atrium_snapshot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atrium-snapshot"
+path = "src/main.rs"

@@ -1,0 +1,317 @@
+ATRIUM — PHASE 2c EVIDENCE (parent session, 14 Sep 2026)
+=========================================================
+
+Every value below was observed by running the command shown. Nothing is relayed
+from a subagent's report except where it says so explicitly. Machine: Nobara
+Linux (Fedora 44), kernel 7.2.4-201.nobara, 28 threads, btrfs on /home, tmpfs on
+/tmp, rustc 1.92.0 (ded5c4c 2025-12-08).
+
+This phase was built IN-SESSION by the parent, not delegated. Reason, observed:
+both recent build children died at the 900-second cap with no report (2a's child
+on an HTTP 429 quota wall, 2b's child on exit_reason=timeout after 44 API calls),
+and each needed a full parent salvage pass afterwards. The model cap was probed
+clear before deciding (HTTP 200 from kimi-k3), so time was the reason, not quota.
+See delegation-briefs/phase-2c-snapshot-restore.md for the full reasoning.
+
+
+1. BUILD AND TEST
+-----------------
+$ cd "/home/muffin/Desktop/Nexus project/snapshot" && cargo build
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.58s
+    (one warning, "method rel_path is never used" — removed)
+
+$ cargo fmt --check
+    FMT_CLEAN
+
+$ cargo test
+    running 41 tests
+    test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+$ hermes verify --json
+    {"recipe": "atrium-snapshot (CLI, no server)", "ok": true, ...}
+    readiness: null  (correct: a CLI with no server)
+
+
+2. THE HASH, AGAINST PUBLISHED VECTORS
+--------------------------------------
+SHA-256 is implemented here rather than pulled from a crate, so it is checked
+against the FIPS 180-4 / NIST vectors before anything is built on it.
+
+$ rustc --edition 2021 -O -o /tmp/sha-check /tmp/sha-check.rs && /tmp/sha-check
+    PASS  empty string
+          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    PASS  abc
+          ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+    PASS  448-bit message (56 bytes) - the padding boundary
+          248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+    PASS  896-bit message (112 bytes) - padding crosses a block
+          cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1
+    PASS  one million 'a' (streaming path, many blocks)
+          cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0
+    PASS  streaming == one-shot across 14 sizes x 5 chunk sizes (70 combinations)
+    all SHA-256 vectors pass
+
+Throughput, observed: 10 MB hashed in 23.2 ms (~432 MB/s).
+
+
+3. THE HARNESS
+--------------
+$ bash hand-test-2c.sh
+    lines run: 111   failures: 0   holes demonstrated (expected, 2e's): 0
+    hand-test-2c: every line behaved as required
+    exit code: 0
+
+111 [ok] lines, 0 [FAIL] lines. Sections A, B, C, D, E, F, G, J, L are gate
+lines; H and I are printed statements (what this tool is not, and what it
+deliberately does not preserve).
+
+
+4. THE THREE NEGATIVE PROOFS — the harness can fail, and for the right reason
+-----------------------------------------------------------------------------
+A harness that cannot fail proves nothing. Each probe is described, run, checked
+that THE INTENDED failure fired (not merely that the exit code was non-zero —
+2b lost a pass to exactly that trap), and then the file restored.
+
+$ bash /tmp/proofs-2c.sh
+
+  PROOF 1: break one expectation (J.3 asserts a file came back)
+    exit code: 1 (want: 1)
+    [FAIL] lines: 1
+    PROOF HOLDS: the intended failure fired — 'J.3 the file is back' is in the output
+    final line: hand-test-2c: 1 FAILED
+    harness restored byte-exact (b185e4bef01895b564da3633d7ce9746645dacf22fa2d5323e3e3034a09906d8)
+
+  PROOF 2: make the outside directory genuinely change mid-run
+    script still parses (bash -n ok)
+    exit code: 1 (want: non-zero)
+    !! OUTSIDE TOUCHED count: 98
+    PROOF HOLDS: the intended failure fired
+    harness restored byte-exact
+
+  PROOF 3: make a refusal write into the store
+    script still parses (bash -n ok)
+    exit code: 1 (want: non-zero)
+    !! STORE CHANGED count: 1
+    PROOF HOLDS: the intended failure fired
+    harness restored byte-exact
+
+  And the restored harness still passes:
+    exit code: 0
+    lines run: 111   failures: 0
+    the harness is intact and green
+
+    proofs: 4 held, 0 failed
+
+
+5. THE STORE'S INTEGRITY CHECK IS LOAD-BEARING
+----------------------------------------------
+snapshot/hand-test-2c.sh is one file. Two guards were proven non-vacuous by
+breaking them and watching the specific test fail.
+
+(a) The same-length tamper. Restore's store check compares sizes first (cheap)
+    and hashes only where sizes agree. A test writes b"HI" over b"hi" — same
+    length, different bytes — and requires the reason to name the checksum.
+
+    With the store check temporarily weakened from Compare::Content to Compare::Shape:
+      test a_same_length_tamper_is_still_caught_by_the_hash ... FAILED
+      test result: FAILED. 0 passed; 1 failed
+    Restored byte-exact: src/lib.rs sha256 d1062b63dc8d3020e68cf5551324e33783164ba63cf87e7817dae546d15ea49c
+
+(b) The read-only-directory pre-flight (see §7).
+    With ensure_contents_removable disabled:
+      test restore_empties_a_read_only_directory_instead_of_failing ... FAILED
+      panicked at tests/snapshot_tests.rs:945
+    Restored byte-exact: src/lib.rs sha256 42ed3cf98a5c01291736cae4c9c8c61b2f3bf119601bf20a9add7dc73e0ed07a
+
+Note on the two hashes: they differ because they are two points in the same
+file's history, not a contradiction. (a)'s d1062b63 is a restored state from
+earlier in the session (before the read-only-directory fix landed); (b)'s
+42ed3cf9 is the current file, and it is the version every result in this document
+was produced by. Verified at the end of the session:
+    $ sha256sum src/lib.rs
+    42ed3cf98a5c01291736cae4c9c8c61b2f3bf119601bf20a9add7dc73e0ed07a  src/lib.rs
+No source file was edited after that; only tests, the harness and the README.
+
+
+6. WHAT A SNAPSHOT COSTS — the measurement DECISIONS.md owes
+-----------------------------------------------------------
+DECISIONS.md ("Snapshots are a plain copy, not copy-on-write") says the claim
+"a plain copy costs too much" is an assumption until measured. Measured, warm
+(source tree read once first, so no first-touch cost is attributed to the tool):
+
+$ /tmp/clean-2c
+     many small: env        44000 bytes   create    277.4 ms   restore    293.8 ms
+      few large: env    104857600 bytes   create    545.2 ms   restore    555.0 ms
+           deep: env            7 bytes   create     13.0 ms   restore     21.1 ms
+
+"many small" = 5,000 files across 100 directories. "few large" = 20 x 5 MB.
+"deep" = 400 nested levels, one file at the bottom.
+
+For scale, the naive first measurement of the same work, before the two fixes in
+§7 were made: create 5,933 ms, restore 5,967 ms on "many small" — 21x and 20x
+slower than what is above. The difference is entirely the second read of
+just-written files, not the copying.
+
+Reflink comparison on this machine:
+    cp --reflink=always on /tmp (tmpfs):   "Operation not supported"
+    cp --reflink=always within btrfs /home:  SUPPORTED
+    plain copy of 100 MB:                   25 ms
+
+This is the observed basis for the COW decision: the root's filesystem is 2e's
+decision and a tmpfs cannot reflink at all, so building COW now would be building
+against an undecided mechanism. Plain copy of 100 MB is 545 ms, which is the
+figure to weigh against "before every task".
+
+
+7. TWO REAL DEFECTS FOUND AND FIXED — both after the phase was already green
+---------------------------------------------------------------------------
+Both were found by measurement or by the blind list, not by the harness. The
+harness was 97/97 green when the first was found, and 97/97 green when the second
+was found. This is why neither check is trusted as sufficient on its own.
+
+DEFECT 1 — a 20x performance loss that also weakened a guarantee.
+  Found by instrumenting a throwaway copy of create(): of a 5,873 ms snapshot,
+  verify_tree(copy) was 5,592 ms (95%). It re-read every file just written.
+  Measured cause: the first read of a file after writing it costs ~1.119 ms;
+  reads two through five of the same file cost ~0.012 ms — about 90x less. That
+  is the filesystem flushing, and it is a constant per file, not per byte.
+  Fix: hash the bytes as they stream out (copy_file_contents) and record what was
+  actually written. Preserves the guarantee and strengthens it — the record
+  attests to the bytes written rather than to a re-read of them.
+  Kept, because the change traded something away: comparing the walk's hashes
+  against the copy's hashes is what catches a file changed mid-snapshot. That
+  check was kept (both hash sets are already in memory) and gained a new error
+  variant, ChangedWhileCopying.
+
+DEFECT 2 — a refusal that destroyed data. Found by the BLIND LIST (item 26).
+  A directory recorded as mode 555 cannot have its children deleted, so
+  clear_contents failed on it — after it had already deleted everything beside it.
+  Observed before the fix:
+      $ atrium-snapshot snapshot restore --root .../root --store .../store --id ro
+      atrium-snapshot: /tmp/atrium-2c-ro/root/rodir: Permission denied (os error 13)
+      REAL EXIT CODE: 1
+      $ ls -A /tmp/atrium-2c-ro/root
+      rodir
+      $ cat .../root/top.txt
+      cat: .../root/top.txt: No such file or directory
+  The modified file was GONE rather than restored, and only the read-only
+  directory survived. This is the worst class of defect in this phase: the undo
+  mechanism causing the loss it exists to prevent.
+  Fix: ensure_contents_removable() — a pre-flight pass over every directory about
+  to be cleared, before the first deletion. A tree that cannot be emptied is
+  refused with nothing changed.
+  Observed after the fix:
+      $ ... restore --root .../root --store .../store --id ro
+      restored: ro
+      EXIT: 0
+      $ ls -A .../root          ->  rodir   top.txt
+      $ cat .../root/top.txt    ->  top
+      $ cat .../root/rodir/f.txt -> x
+  Permanent regression test: restore_empties_a_read_only_directory_instead_of_failing
+  Harness line: L.4
+
+
+8. HARNESS BUGS FOUND IN THE HARNESS ITSELF (all fixed, all observed)
+--------------------------------------------------------------------
+Recorded because a harness whose own comparisons are wrong reports confidently
+about nothing.
+
+(a) 117 false "OUTSIDE TOUCHED" escapes on the first run. The outside directory's
+    fingerprint was taken BEFORE the fixtures created that directory, so tar saw
+    a missing path and the baseline was meaningless. The detector was firing
+    correctly at a directory the harness itself had created. Fixed by taking the
+    baseline after the fixtures exist.
+(b) 19 false "STORE CHANGED" reports. The store listing was captured once at the
+    top of the file, so section A's legitimate first snapshot made every later
+    refusal look as though it had written something. Fixed by taking the baseline
+    immediately before each refusal — which also asks the better question.
+(c) A false PASS that hid DEFECT 2. The probe used `cmd | sed`, so $? was sed's,
+    and the "PASS: restore succeeded" line fired on a FAILED restore because the
+    failed restore left the file in place. Re-run without the pipe, the real exit
+    code was 1. This is the same trap 2b hit and is why every negative check here
+    asserts on the marker text, not on the exit code.
+(d) A stale binary was tested against. The harness built the binary only if it was
+    missing, so after a negative test rebuilt a deliberately broken copy and the
+    source was restored, the harness ran the OLD binary and reported a failure in
+    code that was already fixed. Fixed: rebuild if any source file is newer than
+    the binary. Observed firing: "binary is older than lib.rs — rebuilding".
+
+
+9. THE BLIND SECOND ATTACK LIST
+-------------------------------
+deleg_59a8f0f7, leaf role, kimi-k3, completed 76.33 s, 2 API calls.
+Observed tool use: exactly one write_file call, to /tmp/atrium-blind-2c-child.md.
+No reads, no skill, no project-tree writes — verified from the live transcript at
+/home/muffin/.hermes/cache/delegation/live/deleg_59a8f0f7/task-0.log.
+
+Preserved verbatim as blind-attack-list-2c.md
+  sha256 6b2ad920ac35dbe1ec8187438f875048b506d0c5b1fe4750412c2b552599d03c
+  110 lines, 18,436 bytes — matches the child's file byte-for-byte (cmp identical)
+
+Contamination check: the text contains no project-specific term (no "atrium",
+"resolver", "atom-shell", "crate", "kimi", "deleg_", "attack-list"). Its one
+mention of "btrfs" is general knowledge about filesystems and COW, which the
+description it was given did not mention.
+Unverifiable limit, stated: this proves the child read no project files. It does
+not prove the model had no prior knowledge of Atrium. Same caveat as Phase 1's
+and 2b's blind lists.
+
+Value, mechanism-level, not text-level: most of its ~70 items overlap what
+attack-list-2c.md already had — expected, both heads were pointed at the same
+subject. Genuinely novel mechanisms: 6, folded into attack-list-2c.md §L (§L.1
+FIFO, §L.2 record-level idempotence, §L.3 locale independence, §L.4 read-only
+directory) and §F.12-F.14 (symlink planted at the snapshot's name; snapshot tree
+swapped for a symlink to a decoy; an extra file in the tree). It found DEFECT 2,
+after every other check was green.
+
+
+10. THE FROZEN CRATES AND THE RECORD FILES ARE UNTOUCHED
+--------------------------------------------------------
+$ stat -c '%y  %n' <files>
+    2026-09-13 21:30:52  resolver/src/lib.rs
+    2026-09-13 21:43:52  resolver/src/main.rs
+    2026-09-13 21:30:27  resolver/tests/resolver_tests.rs
+    2026-09-14 18:19:42  fileops/src/lib.rs      (signed off 14 Sep)
+    2026-09-14 18:29:33  fileops/src/main.rs
+    2026-09-14 18:17:18  fileops/hand-test-2a.sh
+    2026-09-14 19:25:26  shell/src/lib.rs        (signed off 14 Sep)
+    2026-09-14 19:05:45  shell/src/main.rs
+    2026-09-14 19:23:10  shell/hand-test-2b.sh
+    2026-09-13 16:44:52  attack-list.md          (Phase 1's record)
+    2026-09-13 21:40:23  attack-list-1b.md
+    2026-09-14 18:47:28  attack-list-2a.md
+    2026-09-14 19:03:41  attack-list-2b.md
+    2026-09-12 16:52:59  resolver/hand-test.sh
+
+Every one predates this phase's work. No signed-off or frozen file was modified.
+
+No instrumentation left in src/: grep for "[instr]" returns 0 in src/lib.rs,
+src/main.rs, src/sha256.rs, tests/snapshot_tests.rs, hand-test-2c.sh.
+No negative-test markers left: grep for "PROOF-3-WROTE-THIS" and "NOT-THERE"
+returns 0 in all of those files.
+
+
+11. FILES OF THIS PHASE
+-----------------------
+attack-list-2c.md                      the test, written BEFORE the code
+blind-attack-list-2c.md                the independent second list, verbatim
+delegation-briefs/phase-2c-snapshot-restore.md   the spec of record
+snapshot/Cargo.toml                    zero dependencies
+snapshot/src/lib.rs                    the implementation
+snapshot/src/main.rs                   the CLI
+snapshot/src/sha256.rs                 FIPS 180-4, against published vectors
+snapshot/tests/snapshot_tests.rs       41 tests
+snapshot/hand-test-2c.sh               111 lines
+snapshot/README.md                     what it promises and what it does not
+snapshot/.hermes/environment.json      verify recipe (CLI, no server)
+
+
+12. WHAT MUFFIN NEEDS TO RUN
+----------------------------
+$ cd "/home/muffin/Desktop/Nexus project/snapshot" && bash hand-test-2c.sh
+
+Expect, as the last line:
+    lines run: 111   failures: 0   holes demonstrated (expected, 2e's): 0
+    hand-test-2c: every line behaved as required
+and exit code 0. Any [FAIL] line, any "!!" line, or a non-zero exit means it is
+not holding. Section H and section I print statements rather than checks.

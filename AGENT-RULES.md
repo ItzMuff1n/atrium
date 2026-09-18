@@ -1,0 +1,216 @@
+# Atrium — Rules for the coding agent
+
+Read this before every session. Read it again if the session has been long.
+
+---
+
+## 1. Who you are working with
+
+The person you are working with **does not read code and will not review it**.
+This project is built entirely by AI agents.
+
+That fact changes what your job is. You are not writing code for a reviewer to
+check. **You are the only thing standing between a bug and production**, and the
+compiler is the only other reviewer this codebase gets.
+
+Consequences you must internalise:
+
+- "It should work" is not a status. Run it.
+- A test you wrote is weak evidence. It shares the assumptions of the code you
+  wrote, including the wrong ones.
+- Do not describe what you intended. Describe what you observed.
+- If you did not run it, say you did not run it.
+
+---
+
+## 2. The documents
+
+| File | What it is |
+|---|---|
+| `DESIGN.md` | The settled design. Source of truth for behaviour. |
+| `DECISIONS.md` | What was rejected and why. Read before proposing changes. |
+| `BUILD-PLAN.md` | Phases, in order, with verification gates. |
+| `STATUS.md` | What is verified vs merely claimed. **You may only append.** |
+| `OPEN-QUESTIONS.md` | Genuinely undecided items. |
+| `AGENT-RULES.md` | This file. |
+
+**If code and `DESIGN.md` disagree, stop and say so.** Do not silently
+"fix" either one. One of them is wrong and the user decides which.
+
+**If you want to do something `DECISIONS.md` rejected**, you may — but say
+explicitly which rejection you are overturning and what new evidence justifies
+it. Silently re-introducing a rejected approach is the single most damaging
+thing you can do to this project, because nobody will read the code and notice.
+
+---
+
+## 3. Reporting
+
+**Report what happened, not what you meant to happen.**
+
+Every report separates:
+
+- **Observed** — you ran it and saw this. Include the actual output.
+- **Changed** — files you created or modified, and what changed in them.
+- **Not done** — anything you skipped, stubbed, or left incomplete.
+- **Uncertain** — anything you are guessing about.
+
+Never write "fixed", "works", or "done" for something you did not execute.
+
+When you hit an error, **paste the error verbatim**. Do not summarise it. Do not
+paraphrase it. The user relays your output to another model that needs the exact
+text.
+
+If you claim a phase is complete, list exactly what the user should do to verify
+it themselves. Do not verify it for them.
+
+---
+
+## 4. Scope discipline
+
+**Do only the phase you were asked to do.**
+
+`BUILD-PLAN.md` is ordered deliberately. The rationale for the order is at the
+bottom of that file. Building ahead is not helpfulness — it creates code that
+depends on foundations that have not been verified yet, and that is exactly the
+failure mode this project is structured to avoid.
+
+If you notice something a later phase needs, **write it down and say so**. Do
+not build it.
+
+If the phase seems too small, it is the right size. Small verified steps are the
+point.
+
+---
+
+## 5. Stop and ask
+
+**Stop and ask the user** when any of these are true:
+
+- The design document does not cover the case you have hit.
+- Following the design would produce something that clearly does not work.
+- You need to change a decision recorded in `DECISIONS.md`.
+- You are about to touch the sandbox path resolver (`DESIGN.md` §3.2) for any
+  reason other than the phase that builds it.
+- You are about to add a dependency.
+- You would need to weaken a gate rule, a permission, or a lock to make
+  something work.
+- You have tried the same fix twice and it has not held.
+
+**Asking is cheap. A wrong assumption in a codebase nobody reads is not.**
+
+---
+
+## 6. Hard rules
+
+These are not preferences.
+
+**The sandbox path resolver is the only way to turn a virtual path into a real
+one.** No other code constructs a real path. Not for convenience, not for a
+special case, not temporarily.
+
+**Never write code that reaches outside the environment root.** Host access does
+not exist in v1. If a task seems to require it, the task is wrong — stop and ask.
+
+**Never disable, bypass, or add an exception to a gate rule to make something
+work.** If a rule blocks legitimate work, that is a finding to report, not an
+obstacle to route around.
+
+**Never auto-apply an effect classification.** Pending means pending.
+
+**The effect vocabulary is defined in exactly one place in code.** Do not spell
+effect names out elsewhere.
+
+**No core file is edited to add a surface.** If adding a surface requires
+touching the core, the plugin architecture is broken — report it.
+
+**Do not add a permission, a state, or an effect kind without saying so
+explicitly.** These are small fixed vocabularies by design.
+
+---
+
+## 7. Code that must be treated as dangerous
+
+Two subsystems where "seems to work" is not good enough, and where you should be
+slower and more paranoid than feels necessary:
+
+**Path resolution (`DESIGN.md` §3.2).** Path traversal is a known bug class with
+known tricks — symlinks, canonicalisation order, unicode separators, null bytes,
+trailing dots. Resolve fully, then check. Never check, then resolve.
+
+**The lock manager (`DESIGN.md` §10).** Concurrency bugs are invisible until they
+are catastrophic, and they do not reproduce reliably. Prefer the boring, obvious
+implementation over the clever one.
+
+For both: **if you find yourself writing something clever, stop.** Clever is how
+these fail.
+
+---
+
+## 8. When something is going wrong
+
+If you have tried the same fix twice and it has not held, **stop fixing and start
+explaining.** Write out, in detail:
+
+- exactly what you did
+- exactly what you observed
+- what you believe is happening and why
+- what you are uncertain about
+
+The user will relay that to another model for a second opinion. That is faster
+and cheaper than a third attempt.
+
+**Do not oscillate.** If a fix for problem A causes problem B, and the fix for B
+brings back A, you have misunderstood the underlying cause. Say so instead of
+alternating.
+
+---
+
+## 9. Session start
+
+At the start of a session:
+
+1. Read `STATUS.md`. It tells you where the project actually is.
+2. **Trust the "verified hands-on" section. Treat the "agent-reported" section
+   as unconfirmed** — including entries you wrote yourself in a previous
+   session.
+3. Read the phase you are on in `BUILD-PLAN.md`.
+4. Do not assume the codebase matches what a previous session's report claimed.
+   Check.
+
+## 10. Session end
+
+Append to `STATUS.md`:
+
+- What you did.
+- What you actually ran, and its output.
+- What the user needs to verify by hand.
+- Anything you left incomplete.
+
+**Everything you write goes in the "agent-reported, unverified" section.** Only
+the user moves an item to "verified hands-on". Never move an entry yourself,
+including your own.
+
+### When to ask the user to run something
+
+**Do not ask the user to run a command you can run yourself.** Run it, and report
+what it printed. This is Muffin's rule, given 14 Sep 2026:
+
+> "just dont ask me to run commands you can yourself, only ask me whenever youre
+> done with a phase"
+
+So the only hands-on request is **the end of a phase** — the verification the phase
+is signed off by. Nothing in between. Mid-phase checks, builds, tests, harness runs,
+probes and re-runs are the agent's own work and must be done without asking.
+
+**What his end-of-phase run is for.** Mechanically it usually adds nothing: the same
+script on the same binary is deterministic, and the agent has already run it. It is
+not a second test — it is the **signature**. The agent writes both the code and the
+harness that tests it, so a misunderstanding would be encoded in both and pass
+confidently; a re-run by the agent is the same head twice. His run is the only
+authority gate, which is why §10 gives the move to "verified hands-on" to him alone.
+Do not dress it up as a technical necessity and do not skip it as ceremony — state
+which of the two it is when he asks.
+
+**Corollary:** the agent must be able to say it has already run the gate itself, and
+must not present an unrun command as a request he has to satisfy.

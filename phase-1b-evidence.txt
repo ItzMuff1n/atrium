@@ -1,0 +1,205 @@
+PHASE 1b — PARENT'S OWN VERIFICATION EVIDENCE
+Recorded 13 Sep 2026 by the orchestrating Hermes session.
+Everything below was run by the parent, after the child returned. The child's
+own claims are NOT repeated here as fact; where they appear they are labelled.
+
+Delegation: deleg_a1e84631 (build, kimi-k3, 582s, 42 api calls)
+Tree state after the child: resolver/src/lib.rs 21:30:52, src/main.rs 21:30:27,
+tests/resolver_tests.rs 21:30:27, hand-test-1b.sh 21:31:21, README.md 21:31:40.
+Phase 1 records untouched: attack-list.md 16:44:52 (unchanged), hand-test.sh
+(12 Sep 16:52:59, unedited). lib.rs no-drift proof (11 Sep 21:43:20) is
+CONSUMED by design — this phase was built to modify it.
+
+------------------------------------------------------------------
+1. OBSERVED — build, test, demo (run by the parent)
+------------------------------------------------------------------
+cargo build            -> Finished dev profile, exit 0
+cargo test             -> 13 tests, 13 passed; 0 failed
+  sections a,b,c,d,e,f,g,h,i + resolve_never_mutates +
+  acceptance_stays_inside_root + phase1b_attack_list + section_j_component_length
+cargo run -- demo      -> exit 0, "demo: all cases behaved as required"
+
+------------------------------------------------------------------
+2. OBSERVED — the four length results (parent's own script)
+------------------------------------------------------------------
+Run against ABSENT paths in /tmp/parent-len, so the only possible source of a
+rejection is the resolver's own check:
+
+  255-byte ASCII, absent     rc=0 ACCEPT  /tmp/parent-len/aaa...(255)
+  256-byte ASCII, absent     rc=1 REJECT  "the component `aaa…` is 256 bytes long;
+                                          a single path component may be at most
+                                          255 bytes (NAME_MAX)"
+  200 Hebrew chars = 400 B   rc=1 REJECT  "the component `אא…` is 400 bytes long;
+                                          … at most 255 bytes (NAME_MAX)"
+  200 nested short comps     rc=0 ACCEPT  /tmp/parent-len/a/a/…(200)
+
+  255-byte ASCII as a REAL file on disk: creation succeeded, ACCEPT.
+  256-byte ASCII as a real file: the FILESYSTEM refused it (File name too long),
+    so that case can only be tested absent — which is what the suite does.
+
+  OS-error leak check: the 256-byte rejection contains no "os error" string.
+  Reason comes from the resolver's own check (NameTooLong), not the OS.
+  CONTRAST — the pre-1b binary returned exactly:
+    "Rejected: the operating system refused `/aaa…` while resolving
+     (`File name too long (os error 36)`)"
+
+------------------------------------------------------------------
+3. OBSERVED — hand-test-1b.sh (parent's run) and Phase 1's hand-test.sh
+------------------------------------------------------------------
+bash hand-test-1b.sh      -> rc=0, 77 lines all [ok], 0 FAIL, 0 ESCAPE
+                             "accepts: 34   rejects: 43"
+                             "hand-test-1b: every line behaved as required"
+
+bash hand-test.sh (Phase 1's, UNEDITED, run by parent)
+                          -> rc=1, 28 FAIL lines, 0 ESCAPE
+                             "accepts: 52   rejects: 39"
+                             "hand-test: 28 line(s) FAILED"
+  All 28 are reject->accept verdict inversions, every ACCEPT inside the root:
+    §B 10  /etc/passwd /etc/shadow /home/muffin /home/muffin/.ssh/id_rsa /root
+           /proc/self/environ /proc/self/cwd /dev/null /sys/class /var/log/syslog
+    §E  2  /home\..\..   /home/documents\..\..
+    §F  9  U+2044, U+2215, U+FF0F lookalikes; U+202E x2; U+FEFF x2;
+           /café/documents (composed); /café/documents (decomposed)
+    §G  7  the 200-nested line; /bbb…(255); "/   "; /home/documents.;
+           /home/documents...; /home/documents␣; /home/ documents
+
+  PARENT'S CORRECTION to the child's report: it grouped these as §B 10, §E 2,
+  §F 11, §G 7 (30). §F is 9, total 28. The paths above are the parent's own
+  reading of the run output, not the child's list.
+
+  The 300-char §G line still rejects; only its reason changed (above).
+
+------------------------------------------------------------------
+4. OBSERVED — parent's own spot attacks (independent of the child's tests)
+------------------------------------------------------------------
+Root /tmp/parent-spot, built by the resolver's own `fixtures` mode.
+Containment check: every ACCEPT verified to land under the canonical root.
+
+ACCEPTS (all contained): /newfile; /newdir/newfile; /link-to-nothing/newfile;
+  /link-to-nothing; /link-to-inside/newfile; /home/documents/notes.txt/
+  (trailing-slash deviation preserved, not "fixed"); /newdir\name (backslash as
+  filename, K.1c); /home/documents/../newfile; /%2e%2e/newfile (percent-encoding
+  stays literal); /newdir/../newfile; /a/../a/../a/../newfile
+REJECTS (each naming its specific step): /../newfile; /newdir/../../newfile;
+  /a/b/newdir/../../../../newfile; /link-to-etc/newfile;
+  /link-to-nothing-out; /link-to-inside/../../../newfile;
+  /home/documents/notes.txt/.. (OS reason, K.1b); //../newfile
+DEEP: 20x"a" + 21x".." -> REJECT naming the step; 20x"a" + 20x".." -> ACCEPT at
+  the root (correct: it lands exactly at the root, not above it).
+
+Relative-target symlink INSIDE the root (link-docs -> home/documents, K.1c
+mechanism the blind list raised):
+  /link-docs/newfile        ACCEPT  → /home/documents/newfile
+  /link-docs/../newfile     ACCEPT  → /home/newfile
+  /link-docs/sub/../newfile ACCEPT  → /home/documents/newfile
+  /link-docs/../../newfile  ACCEPT  → /newfile          (lands AT root: legal)
+  /link-docs/../../../newfile REJECT names the step that climbed above root
+
+THE CHILD'S STATED UNCERTAIN CORNER (no ruling covers it; parent watched):
+  /link-to-nothing/..           ACCEPT → <root>/home/documents
+  /link-to-nothing/sub/../newfile ACCEPT → <root>/home/documents/absent.txt/newfile
+  Both contained. No escape. The child flagged this as its own reading of the
+  K.1a principle ("the target is what matters"); it is NOT covered by any list
+  line or ruling, and remains the one judgement call in this phase.
+
+------------------------------------------------------------------
+5. OBSERVED — new test rigor (read by parent)
+------------------------------------------------------------------
+phase1b_attack_list: covers A–H + I + K, 20 accepts/rejects calls; every reject
+  runs assert_specific_reason AND assert_reason_names_escape, which fails if the
+  reason is NotFound or contains "os error 36" — i.e. the test cannot pass on a
+  bare-absence rejection.
+section_j_component_length: 255 absent ACCEPT; 255 real fixture ACCEPT (asserts
+  resolved path equals the fixture); 256 absent REJECT NameTooLong{256} with a
+  no-"os error" assertion; 400-byte Hebrew REJECT NameTooLong{400} with the same;
+  mid-path over-long component REJECT; 200-deep ACCEPT.
+demo 1b block: asserts containment (r.starts_with(&tmp)) for every accepted 1b
+  case, not only the verdict.
+The three NUL lines remain in-process only (they cannot pass a CLI harness).
+
+------------------------------------------------------------------
+6. PRE-EDIT ASSERTIONS, RECOVERED EXACTLY (old -> new)
+------------------------------------------------------------------
+Source: the pre-edit file read at 21:23:11, recovered verbatim from the session
+record (message 37485). No backup exists on disk; the project is not a git repo.
+
+tests/resolver_tests.rs :304-307  (§G, 300-char component)
+  OLD:  // 300-char single component → ENAMETOOLONG-class clean rejection.
+        let long_comp = format!("/{}", "a".repeat(300));
+        let e = rejects(&f, &long_comp);
+        assert_specific_reason(&e, &long_comp);
+  NEW:  // Item 10: the resolver checks component length itself, in bytes, per
+        // component. 300 bytes → REJECT with its OWN reason, on an ABSENT name.
+        let e = rejects(&f, &long_comp);
+        assert!(matches!(e, ResolveError::NameTooLong { bytes: 300, .. }));
+        assert!(!e.to_string().contains("os error"));
+        SAME VERDICT, NEW REQUIRED REASON (was a generic specificity check that
+        the OS error string would have satisfied).
+
+tests/resolver_tests.rs :308-311  (§G, 200 nested components)
+  OLD:  // 200 nested components → deep non-existent path, clean rejection.
+        let deep = format!("/{}", vec!["a"; 200].join("/"));
+        let e = rejects(&f, &deep);
+        assert_specific_reason(&e, &deep);
+  NEW:  let deep = format!("/{}", vec!["a"; 200].join("/"));
+        accepts(&f, &deep);
+        VERDICT INVERTED reject -> accept.
+
+  (§G trailing-dot/space block: OLD rejected each of " ", "/   ",
+   /home/documents., /home/documents..., /home/documents␣, /home/ documents;
+   NEW: " " stays RelativePath-REJECT, the other five are accepts; the new list
+   also asserts !e.to_string().contains("os error") for the 300-char case.)
+
+section_b_absolute_host_paths  (all 10 lines)
+  OLD:  for p in [10 paths] { let e = rejects(&f, p); assert_specific_reason(&e, p); }
+  NEW:  for p in [same 10 paths] { accepts(&f, p); }
+        VERDICT INVERTED for every line.
+
+section_e_separator_normalisation  (2 of 4 lines)
+  OLD:  for p in ["\\", "\\..\\..", "/home\\..\\..", "/home/documents\\..\\.."] {
+            let e = rejects(&f, p); assert_specific_reason(&e, p); }
+  NEW:  for p in ["\\", "\\..\\.."]        { rejects + assert RelativePath }
+        for p in ["/home\\..\\..", "/home/documents\\..\\.."] { accepts(&f, p) }
+        The two bare spellings are unchanged (still RelativePath); the two
+        absolute ones are inverted. /home//../.. unchanged (still rejects).
+
+section_f_unicode_and_lookalikes  (5 lookalikes + 2 café lines)
+  OLD:  5 lookalikes: rejects + assert NotFound;
+        café: rejects("/café/documents") + assert NotFound; same decomposed.
+  NEW:  5 lookalikes: accepts(&f, p);
+        café: accepts("/café/documents"); accepts("/café/documents");
+        The two existing-directory assertions (/café and /café themselves) are
+        UNCHANGED. The NUL block and the OS-layer InvalidInput check are
+        UNCHANGED.
+
+NOT updated, and correctly so: section_a, section_c, section_d, section_h,
+section_i, resolve_never_mutates, acceptance_stays_inside_root.
+
+------------------------------------------------------------------
+7. BLIND LIST (deleg_b6b1894b) — novel mechanisms, probed against the built resolver
+------------------------------------------------------------------
+Written verbatim to blind-attack-list-1b.md (sha256 2e31d0ee…, 276 lines).
+Contamination: exactly one tool call (write_file to its own file); no reads of
+the project, no skill, no other terminal use.
+
+NOVEL, now probed by the parent:
+  percent-encoding /%2e%2e, /..%00/x   -> literal, contained (no decoder above
+      the resolver; correct for this layer)
+  deep nesting + traversal             -> 21 steps above 20 accepts REJECTS
+      naming the step; 20 above 20 lands at root and ACCEPTs
+  NAME_MAX component + traversal       -> /<255a>/../<255b> contained
+  PATH_MAX-scale 2000 components       -> contained; +2001 ".." REJECTS
+  relative-target symlink + traversal  -> all four shapes contained (above)
+None produced an escape. All five are still worth keeping as regression lines.
+
+------------------------------------------------------------------
+8. WHAT THE PARENT DID NOT DO
+------------------------------------------------------------------
+- Did not run the phase's gate. The gate is Muffin watching attack-list-1b.md
+  line by line. Nothing here substitutes for that.
+- Did not edit attack-list.md, hand-test.sh, or STATUS.md.
+- Did not fix or "tidy" the trailing-slash deviation (ruling: leave it).
+- Did not add the five novel blind lines to attack-list-1b.md. §13 makes running
+  every uncovered line a precondition of ACCEPTING the phase; the list is the
+  thing Muffin watches, so changing it is his call, not the parent's.
+------------------------------------------------------------------

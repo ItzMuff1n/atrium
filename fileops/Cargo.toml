@@ -1,0 +1,18 @@
+[package]
+name = "atrium-fileops"
+version = "0.1.0"
+edition = "2021"
+
+# Phase 2a (delegation-briefs/phase-2a-file-operations.md §8): the ONE
+# dependency is a path reference to our own verified crate, already in this
+# project and signed off hands-on. Nothing external enters the build.
+[dependencies]
+atrium-resolver = { path = "../resolver" }
+
+[lib]
+name = "atrium_fileops"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atrium-fileops"
+path = "src/main.rs"

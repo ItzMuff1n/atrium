@@ -1,0 +1,7 @@
+[package]
+name = "atrium-shell"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+atrium-resolver = { path = "../resolver" }

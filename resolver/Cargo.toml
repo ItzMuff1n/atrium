@@ -1,0 +1,14 @@
+[package]
+name = "atrium-resolver"
+version = "0.1.0"
+edition = "2021"
+
+# Dependencies: NONE. std only, by design (brief §8.1).
+
+[lib]
+name = "atrium_resolver"
+path = "src/lib.rs"
+
+[[bin]]
+name = "atrium-resolver"
+path = "src/main.rs"

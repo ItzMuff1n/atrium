@@ -1,0 +1,12 @@
+[package]
+name = "atrium-watcher"
+version = "0.1.0"
+edition = "2021"
+description = "Atrium Phase 2d — the filesystem watcher. Observes the environment root and reports what changed."
+
+# NO DEPENDENCIES, deliberately. The Linux inotify entry points are declared as
+# `extern "C"` symbols in src/lib.rs and resolved against the libc that Rust
+# already links for x86_64-unknown-linux-gnu. Nothing is fetched from a registry,
+# so this is not the stop-and-ask dependency `AGENT-RULES.md` §5 guards. See
+# DECISIONS.md ("The watcher reaches inotify through its own extern declarations").
+[dependencies]

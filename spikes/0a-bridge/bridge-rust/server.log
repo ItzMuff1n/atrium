@@ -1,0 +1,27 @@
+listening on 127.0.0.1:42321
+client connected: 127.0.0.1:43700
+[127.0.0.1:43700] recv: {"type":"ping"}
+[127.0.0.1:43700] sent: {"type":"pong","text":null}
+[127.0.0.1:43700] recv: {"type":"echo","text":"hello atrium"}
+[127.0.0.1:43700] sent: {"type":"echo","text":"hello atrium"}
+[127.0.0.1:43700] recv: {"type":"echo", nope
+[127.0.0.1:43700] sent: {"type":"app_error","text":"malformed JSON: key must be a string at line 1 column 17"}
+[127.0.0.1:43700] recv: {"type":"shatter","text":"x"}
+[127.0.0.1:43700] sent: {"type":"app_error","text":"unknown message type: shatter"}
+[127.0.0.1:43700] client disconnected
+client connected: 127.0.0.1:36070
+[127.0.0.1:36070] recv: {"type":"echo","text":"hello"}
+[127.0.0.1:36070] sent: {"type":"echo","text":"hello"}
+[127.0.0.1:36070] client disconnected
+client connected: 127.0.0.1:36084
+[127.0.0.1:36084] recv: {"type":"echo","text":"hello hi hello"}
+[127.0.0.1:36084] sent: {"type":"echo","text":"hello hi hello"}
+[127.0.0.1:36084] client disconnected
+client connected: 127.0.0.1:55346
+[127.0.0.1:55346] recv: {"type":"echo","text":"hi"}
+[127.0.0.1:55346] sent: {"type":"echo","text":"hi"}
+[127.0.0.1:55346] client disconnected
+client connected: 127.0.0.1:50198
+[127.0.0.1:50198] recv: {"type":"echo","text":"hi"}
+[127.0.0.1:50198] sent: {"type":"echo","text":"hi"}
+[127.0.0.1:50198] client disconnected

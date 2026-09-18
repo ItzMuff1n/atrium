@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "atrium-resolver (CLI, no server)",
+    "kind": "rust",
+    "bootstrap": [],
+    "build": [
+      "cargo build"
+    ],
+    "test": [
+      "cargo test"
+    ],
+    "start": null,
+    "port": null,
+    "readinessPath": null,
+    "evidence": [
+      "Detected Cargo.toml",
+      "start removed 2026-09-12: atrium-resolver is a command-line tool with no long-running server. The detector guessed `cargo run`, which prints usage and exits, so the readiness poll could never succeed and every verify run reported ok=false. Not a code fault."
+    ]
+  },
+  "updatedAt": "2026-09-12T13:55:14.274275+00:00"
+}
