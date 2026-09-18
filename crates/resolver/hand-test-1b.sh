@@ -2,9 +2,10 @@
 # Atrium Phase 1b — hands-on attack pass (paths that do not exist yet).
 #
 # Runs every line of attack-list-1b.md sections A–M against the resolver,
-# plus section N, the textual-mode escape found on 18 Sep 2026 (which is not
+# plus section N, the textual-mode escape found on 18 Sep 2026, and section Q,
+# the out-and-back chain and ancestor-landing ruling of 18 Sep 2026 (neither is
 # in attack-list-1b.md — that file is Phase 1b's frozen record and is not
-# edited); section N is described where it is defined, below,
+# edited); both are described where they are defined, below,
 # in a throwaway environment root built by the resolver's own `fixtures`
 # mode (which now also creates the dangling-symlink and §M.3 fixtures).
 # Same shape as hand-test.sh.
@@ -12,8 +13,9 @@
 # Usage:  bash hand-test-1b.sh [root]
 #         (default root: /tmp/atrium-handtest-1b)
 #
-# Read-only with respect to the project: it only creates files under the
-# throwaway root and deletes that root at the end.
+# Read-only with respect to the project: it creates files under the throwaway
+# root and, for section Q, one directory beside it (the environment the root
+# sits in), and deletes both at the end.
 
 set -u
 
@@ -81,12 +83,49 @@ fi
 # The root as the filesystem sees it, for the containment check above.
 CANON_ROOT="$(realpath -m -- "$ROOT" 2>/dev/null || echo "$ROOT")"
 
+# Section Q fixtures. A link whose target is OUTSIDE the root is followed
+# through the environment that holds this test's root: the root's parent, a
+# sibling directory outside it, and a relay out there that points back in.
+#
+# Built here rather than in the resolver's `fixtures` mode because they are
+# shaped for THIS root's position on the host (the parent of the root), whereas
+# the shared fixtures are host paths chosen to be wrong everywhere.
+#
+#   <root>/q-out      -> <parent>/q-outside          (a hop out)
+#   <root>/q-relay    -> <root>                      (a relay link outside, back in)
+#   <root>/q-back     -> <parent>/q-outside/q-relay   (out, then back in)
+#   <root>/q-mid      -> <root>/q-mid-2               (inside)
+#   <root>/q-mid-2    -> <parent>/q-outside/q-relay   (then out and back)
+#   <root>/q-a        -> <parent>                     (lands on an ANCESTOR of the root)
+#
+# Section Q is not in attack-list-1b.md: that file is Phase 1b's frozen record
+# and is not edited. The ruling it tests is in docs/DECISIONS.md (ruling 5,
+# 18 Sep 2026).
+OUTSIDE_DIR="$(dirname "$CANON_ROOT")/q-outside"
+rm -rf "$OUTSIDE_DIR"
+mkdir -p "$OUTSIDE_DIR"
+ln -s "$CANON_ROOT" "$OUTSIDE_DIR/q-relay"
+ln -s "$OUTSIDE_DIR" "$ROOT/q-out"
+ln -s "$OUTSIDE_DIR/q-relay" "$ROOT/q-back"
+ln -s "$ROOT/q-mid-2" "$ROOT/q-mid"
+ln -s "$OUTSIDE_DIR/q-relay" "$ROOT/q-mid-2"
+ln -s "$(dirname "$CANON_ROOT")" "$ROOT/q-a"
+
+
 echo "environment root: $ROOT"
 echo
 
 FAILS=0
 ACCEPTS=0
 REJECTS=0
+
+# Expected totals, so a silently added, removed or reclassified case is caught
+# rather than read as a pass. A gate line that stops being run is the failure
+# this whole file exists to prevent.
+# (53 and 74 read from an actual run of this script on 18 Sep 2026, after
+# section Q was added; 113 lines before it, 127 after.)
+EXPECTED_ACCEPTS=53
+EXPECTED_REJECTS=74
 
 # run <section> <expected: R|A> <path>
 run() {
@@ -316,7 +355,44 @@ run N A '/nope/../link-to-inside/newfile'
 run N A '/link-to-nothing/..'
 
 echo
+echo "=== Q. chains that leave the root and come back (expect REJECT) ==="
+echo "  -- Ruling 5, 18 Sep 2026: a chain that leaves the root at ANY hop is"
+echo "     refused, even when it ends inside the root. Before the ruling every"
+echo "     REJECT line below was ACCEPTED: the resolver followed the whole chain"
+echo "     with canonicalize and checked only where it landed."
+echo "  -- out and back: <root>/q-back -> <parent>/q-outside/q-relay -> <root>"
+run Q R '/q-back'
+run Q R '/q-back/notes.txt'
+run Q R '/q-back/home/documents/notes.txt'
+echo "  -- the same chain reached under an absent prefix, so the \`..\` cannot"
+echo "     hide it"
+run Q R '/nope/../q-back'
+run Q R '/nope/../q-back/notes.txt'
+echo "  -- the hop out sits in the MIDDLE of a longer chain"
+run Q R '/q-mid'
+run Q R '/q-mid/notes.txt'
+run Q R '/q-mid/home/documents/notes.txt'
+echo "  -- a link that LANDS on an ancestor of the root (the <root>/a -> /home"
+echo "     shape). The spelling can walk straight back into the root and the"
+echo "     final location is genuinely inside; leaving is what decides."
+run Q R '/q-a'
+run Q R '/q-a/notes.txt'
+echo "  -- controls: the same shapes staying inside must still be ACCEPTED, and"
+echo "     so must the ordinary path, or the ruling has gone too far"
+run Q A '/home/documents/notes.txt'
+run Q A '/nope/../home/documents/notes.txt'
+run Q A '/nope/../link-to-inside/notes.txt'
+run Q A '/link-to-inside/notes.txt'
+
+echo
 echo "accepts: $ACCEPTS   rejects: $REJECTS"
+if [ "$ACCEPTS" != "$EXPECTED_ACCEPTS" ] || [ "$REJECTS" != "$EXPECTED_REJECTS" ]; then
+    echo "hand-test-1b: line totals changed -- expected $EXPECTED_ACCEPTS accepts" >&2
+    echo "  and $EXPECTED_REJECTS rejects, saw $ACCEPTS and $REJECTS. A case was" >&2
+    echo "  added, removed or reclassified. Update EXPECTED_* deliberately." >&2
+    FAILS=$((FAILS+1))
+fi
+rm -rf "$OUTSIDE_DIR"
 rm -rf "$ROOT"
 if [ "$FAILS" -gt 0 ]; then
     echo "hand-test-1b: $FAILS line(s) FAILED"

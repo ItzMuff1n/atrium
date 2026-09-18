@@ -76,3 +76,33 @@ Not open questions — decided to postpone.
 - Drag-and-drop surface install
 - Real-time co-editing of a file — genuinely expensive, out of scope
 - Docker-per-workspace isolation (AgentGUI's approach) — worth revisiting later
+
+### A known bug that is safe to leave for now: the snapshot store's textual fallback
+
+`store_is_inside_root` (`crates/snapshot/src/lib.rs`, the fallback match arm below)
+compares the two paths **textually** whenever either one does not exist:
+
+```rust
+_ => store.starts_with(root),   // component-wise, but NOT normalised
+```
+
+The comparison is component-wise, so it is not fooled by a name that merely shares
+a string prefix — but it does not normalise, so a store that really sits *outside*
+the root is judged by its spelling. A legitimate store at `<root>/../elsewhere/store`,
+spelled that way and not yet created, is refused as being "inside the environment
+root"; create the same store first and it is accepted. That was probed and recorded
+in `atrium-fix-1b-report.md` §6, and it is the same *shape* as the resolver bug fixed
+on 18 Sep 2026 — a spelling-based containment decision — which is why it is written
+down rather than left to be rediscovered.
+
+**Why it is safe to defer: it refuses a store it should have allowed, and never
+allows one it should have refused** — the whole error is in the harmless direction,
+and the containment decision is the one that has to be right, not the convenience
+of the spelling. No reachable escape exists: with the store absent,
+`validate_store` refuses first ("the store does not exist; refusing rather than
+creating it") and `StoreInsideRoot` is reported after it, so the wrong verdict is
+only ever reached in the over-refusal direction.
+
+Fix it when the store's spelling is next touched — normalising before the textual
+compare is the whole change, and it wants the same "record the failure first" the
+resolver fix got.
