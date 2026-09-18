@@ -38,6 +38,10 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# The label every issue this script files carries. Per docs/QUEUE.md the whole
+# report family shares one label, so a run can find what previous runs filed.
+REPORT_LABEL = "fuzz-report"
+
 # A crash artifact from libFuzzer is named `crash-<hash>`; other prefixes
 # (`oom-`, `timeout-`, `slow-unit-`) are not escapes in this target, but they are
 # still findings and are reported the same way.
@@ -232,12 +236,20 @@ def body_for(panic, data, run_url, duration, artifact_name):
 
 
 def existing_issue(title):
-    """Number of an open `fuzz` issue with exactly this title, or None."""
+    """Number of an open `fuzz-report` issue with exactly this title, or None.
+
+    Deduplication stays keyed on the title (the panic message is the identity of
+    a bug class); the LABEL here is the report family, per docs/QUEUE.md, so a
+    later run of the workflow can find what earlier runs filed without the label
+    having to stand in for the identity. Creating and looking up must use the
+    same labels, or a crash filed by one run cannot be found by the next and
+    every run opens a duplicate.
+    """
     res = sh(
         [
             "gh", "issue", "list",
             "--state", "open",
-            "--label", "fuzz",
+            "--label", REPORT_LABEL,
             "--limit", "100",
             "--json", "number,title",
         ]
@@ -314,7 +326,8 @@ def main():
                extract_url(url))
         return 0
 
-    res = sh(["gh", "issue", "create", "--title", title, "--body", body, "--label", "fuzz"])
+    res = sh(["gh", "issue", "create", "--title", title, "--body", body,
+              "--label", REPORT_LABEL])
     if res.returncode != 0:
         finish("Found the crash but could NOT open an issue: %s" % res.stderr.strip())
         return 1
