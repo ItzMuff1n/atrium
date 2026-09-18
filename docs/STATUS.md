@@ -14,6 +14,34 @@ agent must never move an entry, including its own from a previous session.
 
 ## Current phase
 
+**The repository is at `/home/muffin/VibeCodeProjects/atrium` — GitHub
+`ItzMuff1n/atrium`, private, branch `main`, a cargo workspace with the five crates
+under `crates/` and these documents under `docs/`.** The project moved here on
+18 Sep 2026 from `/home/muffin/Desktop/Nexus project`, which is kept untouched as a
+backup. **"Done" is now `scripts/check.sh` passing locally and the CI run on GitHub
+green for that commit** — not an agent's report. See `AGENT-RULES.md` §6 and "The
+repository" at the foot of this file.
+
+**Current phase: 2d — the filesystem watcher. BUILT, NOT SIGNED OFF.** The crate is
+`crates/watcher/` (binary `atrium-watcher`). It is agent-verified only — 42 tests,
+the hands-on harness 16/16 lines, three defects found and fixed with each fix proven
+load-bearing — and it sits in "Agent-reported, unverified" below. **Its entry must not
+be read as complete.** The gate is Muffin's, and it has not been run:
+
+```
+cd "/home/muffin/VibeCodeProjects/atrium/crates/watcher" && bash hand-test-2d.sh
+```
+
+**Until that is run and he moves the entry up, Phase 2d is unfinished.** The one
+open blocker on it is not a test: `crates/watcher/.hermes/environment.json` was never
+written (the write was blocked and the approval timed out, which is not consent), so
+`hermes verify` needs `--skip-start` for this crate. One file to copy from
+`crates/snapshot/.hermes/environment.json`.
+
+**Next: Muffin's 2d gate above, then Phase 2e — strong confinement for `run
+commands`.** 2e is the last gate before Phase 5 (the agent loop) and is required
+after 2d, not instead of it. See the 2e paragraph below.
+
 **Phase 2c — snapshot and restore. VERIFIED HANDS-ON by Muffin, 14 Sep 2026.
 Signed off.** See "Verified hands-on" below for what he ran and what he saw.
 **111 lines, zero failures, 0 holes** — with the outside directory, host
@@ -56,12 +84,6 @@ extends it. Together they are the whole of the resolver as it stands.
 
 **Phase 0 is CLOSED.** 0a and 0b confirmed by user in chat. **0c verified
 hands-on by Muffin, 13 Sep 2026** — see "Verified hands-on" below.
-
-**Next: Phase 2e — strong confinement for `run commands`.** Phase 2d (the watcher)
-was built 15 Sep 2026 and awaits Muffin's hands-on gate; see "Agent-reported" below
-and `phase-2d-evidence.txt`. **2e is not optional and is the last gate before Phase
-5** — nothing autonomous runs through a shell that can reach the host, and nothing
-autonomous may exercise the shell until 2e passes.
 
 **0c blocks Phase 9 only — not Phase 2, not 2b.** That is BUILD-PLAN rule 2's
 worked example, and it has been re-argued from scratch twice; read it there
