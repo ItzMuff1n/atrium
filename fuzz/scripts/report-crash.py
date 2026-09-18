@@ -277,7 +277,8 @@ def main():
     if artifact is None:
         # The workflow only calls this when the run failed, but a failure can
         # also be a build error or a timeout, which leaves no artifact. Saying so
-        # is more useful than a bare failure.
+        # is more useful than a bare failure -- and it is NOT an error in the
+        # report, so this path stays exit 0.
         finish(
             "No crash artifact was found. The run failed without libFuzzer "
             "recording an input -- a build error, a timeout, or a cancelled run "
@@ -301,9 +302,13 @@ def main():
         res = sh(["gh", "issue", "comment", str(number), "--body",
                   "Same panic message again, with a different input.\n\n" + body])
         if res.returncode != 0:
+            # Non-zero: the crash was found and the report was LOST. A step that
+            # exits 0 here hides exactly the failure this workflow exists to
+            # surface -- observed on run 35397323455, where the crash was
+            # detected, minimized and uploaded while the issue was never filed.
             finish("Found the crash but could NOT comment on issue #%d: %s"
                    % (number, res.stderr.strip()))
-            return 0
+            return 1
         url = sh(["gh", "issue", "view", str(number), "--json", "url"]).stdout
         finish("Commented on the existing open issue #%d (same panic message)." % number,
                extract_url(url))
@@ -312,7 +317,7 @@ def main():
     res = sh(["gh", "issue", "create", "--title", title, "--body", body, "--label", "fuzz"])
     if res.returncode != 0:
         finish("Found the crash but could NOT open an issue: %s" % res.stderr.strip())
-        return 0
+        return 1
     finish("Opened a new issue.", res.stdout.strip().splitlines()[-1] if res.stdout.strip() else "")
     return 0
 

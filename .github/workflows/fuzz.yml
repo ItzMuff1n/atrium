@@ -289,15 +289,36 @@ jobs:
       # Files (or comments on) the issue, deduplicating by panic message. Runs on
       # failure only: a clean run has nothing to report. It minimizes the input
       # with `cargo fuzz tmin` first, so the report reproduces in seconds.
+      #
+      # GH_TOKEN is not optional: `gh` refuses to run in Actions without it
+      # ("To use GitHub CLI in a GitHub Actions workflow, set the GH_TOKEN
+      # environment variable"), so without this the crash is detected and then
+      # silently never reported. Observed on run 35397323455. The workflow's
+      # `permissions: issues: write` is what makes the token able to file one.
       - name: Report the crash as an issue
         id: report
         if: always() && steps.fuzz.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set +e
           python3 fuzz/scripts/report-crash.py \
             --artifacts fuzz/artifacts/resolve \
             --duration "${{ github.event.inputs.duration || '1200' }}" \
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --log fuzz-run.log
+          rc=$?
+          # The step's own status is what says whether the report landed. The
+          # script writes what it did to issue-status.txt, and a lost report must
+          # not be able to pass itself off as a green step: a crash that is found
+          # and never filed is the one outcome this workflow cannot afford to
+          # hide. rc != 0 covers a lost report; the file check additionally
+          # catches a script that died earlier with a different code.
+          if [ "$rc" -ne 0 ] || ! grep -q . issue-status.txt; then
+            echo "::error::the crash report did not complete; see the report output above"
+            exit 1
+          fi
+          echo "report step: $(cat issue-status.txt)"
 
       # A crash means the fuzzer did its job; a run that finds nothing means the
       # gate is not being exercised. Both are worth seeing on the run summary,
@@ -315,6 +336,8 @@ jobs:
             echo "- crash artifacts: $(find fuzz/artifacts/resolve -type f 2>/dev/null | wc -l)"
             if [ -f issue-status.txt ]; then
               echo "- issue: $(cat issue-status.txt)"
+            else
+              echo "- issue: not looked for (the fuzzer found nothing)"
             fi
             if [ -f created-issue-url.txt ]; then
               echo "- issue URL: $(cat created-issue-url.txt)"
