@@ -44,11 +44,13 @@ def run_gh(args: list[str]) -> tuple[int, str]:
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
-def collect(results_dir: Path, expected_shards: list[int]) -> tuple[list[dict], dict, list[str]]:
+def collect(results_dir: Path, expected_shards: list[int]) -> tuple[list[dict], dict, list[str], bool]:
     """Read every shard's outcomes.json.
 
-    Returns (missed, totals, notes). `notes` records anything a reader would
-    otherwise have to guess at.
+    Returns (missed, totals, notes, found_any). `notes` records anything a reader
+    would otherwise have to guess at. `found_any` is False when not one shard
+    produced an outcomes.json -- the caller must treat that as a failure to
+    collect rather than as a clean run, because the two are not the same claim.
 
     A shard with no outcomes.json is not automatically a failure: a shard
     assigned zero mutants creates a mutants.out directory but no outcomes.json
@@ -68,10 +70,19 @@ def collect(results_dir: Path, expected_shards: list[int]) -> tuple[list[dict], 
     }
     notes: list[str] = []
 
-    outcomes = sorted(results_dir.glob("*/mutants.out/outcomes.json"))
+    outcomes = sorted(results_dir.rglob("outcomes.json"))
     reported_shards: list[str] = []
     for path in outcomes:
-        shard_dir = path.parent.parent.name
+        # The shard identity comes from the path itself, because the artifact
+        # layout is not something this script should have to assume. Each shard
+        # uploads under the artifact name `mutants-shard-<k>`, and the downloaded
+        # path contains that name; taking it from the path means a change to how
+        # the artifact is wrapped cannot silently make this script read the wrong
+        # shard or, worse, read nothing at all.
+        shard_dir = next(
+            (part for part in path.parts if part.startswith("mutants-shard-")),
+            path.parent.parent.name,
+        )
         reported_shards.append(shard_dir)
         try:
             data = json.loads(path.read_text())
@@ -105,11 +116,21 @@ def collect(results_dir: Path, expected_shards: list[int]) -> tuple[list[dict], 
                 }
             )
 
+    # No results at all. This is reported to the caller as found_any=False and the
+    # caller fails on it. The reason is the whole point of the negative proof: on
+    # run 35400933078 the shards found the planted mutants and exited 2, but the
+    # artifact layout did not match this script's older glob, so it saw nothing,
+    # wrote "no results to report", and exited 0 -- a lost report on a green run,
+    # which is exactly what the reporting discipline here exists to prevent.
+    # "I could not find any results" and "there were no findings" are different
+    # statements, and only one of them is safe to make without evidence.
     if not outcomes:
-        notes.append(
-            "no outcomes.json found in any shard -- no shard got as far as testing"
+        print(
+            "report: no shard produced an outcomes.json, so nothing could be "
+            "collected. That is NOT the same as a clean run -- check each shard's "
+            "log in this run."
         )
-        return missed, totals, notes
+        return missed, totals, notes, False
 
     # Name the shards that reported nothing. In a small scope this is expected;
     # in a large one it means a shard died, and either way the reader should not
@@ -136,7 +157,7 @@ def collect(results_dir: Path, expected_shards: list[int]) -> tuple[list[dict], 
             f"the collected list has {len(missed)} entries but the shards' own "
             f"counts sum to {totals['missed']} -- treat the list as incomplete"
         )
-    return missed, totals, notes
+    return missed, totals, notes, True
 
 
 def build_body(missed: list[dict], totals: dict, notes: list[str], run_url: str) -> str:
@@ -228,7 +249,7 @@ def main() -> int:
 
     results_dir = Path(args.results)
     expected_shards = [int(x) for x in args.expected_shards.split(",") if x.strip()]
-    missed, totals, notes = collect(results_dir, expected_shards)
+    missed, totals, notes, found_any = collect(results_dir, expected_shards)
 
     # Write the list out regardless of what happens with the issue, so the
     # workflow's step summary and the uploaded artifact carry it either way.
@@ -236,14 +257,21 @@ def main() -> int:
         f"{m['location']}" + (f" — {m['description']}" if m["description"] else "")
         for m in missed
     )
-    write("mutants-summary.txt", summary)
+    # Trailing newline: without it `wc -l` reports one fewer line than there are
+    # entries, which reads as a dropped mutant to anyone checking the artifact.
+    write("mutants-summary.txt", summary + "\n" if summary else "")
 
-    # No results at all: the shards failed before testing happened. That is
-    # already a red run; it is not a lost report.
-    if not any(results_dir.glob("*/mutants.out/outcomes.json")):
-        write("issue-status.txt", "no results to report (no shard produced outcomes.json)")
-        print("report: no results to report; the shards' own failures are the signal")
-        return 0
+    # Nothing was collected at all. Fail, because the honest statement is "I
+    # could not read the results", not "there were no findings". This is the
+    # negative-proof defect: the shards found uncovered mutants and exited 2
+    # while the reporter saw an empty directory and returned success.
+    if not found_any:
+        write(
+            "issue-status.txt",
+            "FAILED: no outcomes.json found in any shard -- check the shard logs "
+            "before trusting this run",
+        )
+        return 1
 
     # A clean week: nothing to file, and nothing to comment.
     if not missed:
