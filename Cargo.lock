@@ -12,3 +12,18 @@ dependencies = [
 [[package]]
 name = "atrium-resolver"
 version = "0.1.0"
+
+[[package]]
+name = "atrium-shell"
+version = "0.1.0"
+dependencies = [
+ "atrium-resolver",
+]
+
+[[package]]
+name = "atrium-snapshot"
+version = "0.1.0"
+
+[[package]]
+name = "atrium-watcher"
+version = "0.1.0"

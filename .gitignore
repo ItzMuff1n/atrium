@@ -1,0 +1,24 @@
+# Atrium — what git must never track.
+#
+# Build output. Nothing here is source, and nothing here is needed to build the
+# project: `cargo build` regenerates target/ from the source and Cargo.lock.
+target/
+
+# Flutter/Dart build output (spikes/0a-bridge/bridge-flutter).
+.dart_tool/
+build/
+
+# JetBrains/IntelliJ editor state. Per-machine, not per-project.
+.idea/
+
+# Hermes agent-instruction folders. These are local tool configuration, not
+# project source, and each one is regenerated per machine.
+.hermes/
+
+# Logs. Written by whatever ran last, useful for minutes and never for history.
+*.log
+
+# Flutter's prebuilt engine binaries inside a spike. The Flutter scaffold's own
+# linux/.gitignore already ignores this path; the line is repeated here so the
+# exclusion survives even if that scaffold file is ever regenerated.
+spikes/**/linux/flutter/ephemeral/

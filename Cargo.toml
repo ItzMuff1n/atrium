@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+
+# The five Atrium crates. Every one is std-only plus path dependencies on other
+# crates in this workspace — no registry crate is fetched (AGENT-RULES.md §5).
+members = [
+    "crates/resolver",
+    "crates/fileops",
+    "crates/shell",
+    "crates/snapshot",
+    "crates/watcher",
+]
+
+# spikes/ holds the throwaway Phase 0 experiments. They are deliberately NOT
+# workspace members: they are archival, they have their own lockfiles and their
+# own pinned dependencies, and a spike's dependency set must never be able to
+# leak into the product build. `exclude` is what makes that structural rather
+# than a convention — without it, cargo would try to adopt any package it finds
+# under this directory, and building a spike directly would fail with "this
+# package believes it's in a workspace when it's not".
+exclude = ["spikes"]
