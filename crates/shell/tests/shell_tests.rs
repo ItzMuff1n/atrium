@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use atrium_shell::{run, ExitStatus, RunError, RunOptions, VirtualPath, CHILD_PATH};
+use atrium_shell::{
+    run, ExitStatus, RunError, RunOptions, VirtualPath, CHILD_PATH, DEFAULT_MAX_OUTPUT_BYTES,
+};
 
 /// Build a throwaway environment root with the attack-list-2b.md fixtures,
 /// by hand (mkdir/write/symlink — NEVER another crate's fixture mode), plus
@@ -1090,5 +1092,104 @@ fn n_disclosure_no_real_path_in_any_refusal() {
             }
         }
     }
+    cleanup(&root, &outside);
+}
+
+// ------------------- M. behaviour the mutation run found untested (#22)
+//
+// From the weekly mutation run of 2026-09-18 (issue #22). Each test below
+// exists because cargo-mutants made a change that the whole suite failed to
+// notice. Mutants in this file that no test CAN notice are documented on the
+// issue instead of being papered over.
+
+/// The status is a typed value and its Display is what the CLI prints for it.
+/// The mutant makes Display write NOTHING, which turns a timeout into a blank
+/// line -- indistinguishable from success to anything reading stdout. Assert
+/// the wording of all three outcomes, not just that a string came back.
+#[test]
+fn m1_exit_status_display_names_all_three_outcomes() {
+    assert_eq!(ExitStatus::Exited(0).to_string(), "exit 0");
+    assert_eq!(ExitStatus::Exited(42).to_string(), "exit 42");
+    assert_eq!(ExitStatus::Signalled(9).to_string(), "killed by signal 9");
+    assert_eq!(ExitStatus::Signalled(15).to_string(), "killed by signal 15");
+    assert_eq!(ExitStatus::TimedOut.to_string(), "timed out");
+}
+
+/// A virtual path must display as the agent spelled it -- the same mutant (a
+/// Display that writes nothing) would erase every path from every message.
+#[test]
+fn m2_virtual_path_displays_as_the_spelling_given() {
+    for s in ["/", "/home/work", "/home/documents/sub", "/a b/c"] {
+        assert_eq!(vp(s).to_string(), s, "displayed differently for {s:?}");
+    }
+}
+
+/// The timed-out child is REAPED, not left a zombie. `/proc/thread-self/children`
+/// lists the live children of this test's own thread: a reaped child is absent,
+/// an unreaped one stays for the life of the process. The mutant that skips the
+/// post-timeout wait leaves the killed child in that list, so this checks the
+/// claim directly rather than through the proxy the older f2 test uses.
+#[cfg(target_os = "linux")]
+#[test]
+fn m3_a_timed_out_child_is_reaped_not_left_a_zombie() {
+    let (root, outside, _t) = make_root();
+    let mut opts = RunOptions::default();
+    opts.timeout = Duration::from_millis(300);
+    let (p, a) = sh("while true; do :; done");
+    let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();
+    assert_eq!(o.status, ExitStatus::TimedOut);
+    let children = std::fs::read_to_string("/proc/thread-self/children")
+        .expect("/proc/thread-self/children must be readable on Linux");
+    assert!(
+        children.trim().is_empty(),
+        "the timed-out child was not reaped; unreaped pids: {:?}",
+        children.trim()
+    );
+    cleanup(&root, &outside);
+}
+
+/// The DEFAULT cap is 1 MiB, and it is what a caller who sets nothing gets.
+/// The mutant changes the arithmetic (`1024 * 1024` to `1024 + 1024`),
+/// silently shrinking the default capture by a factor of 512.
+#[test]
+fn m4_the_default_output_cap_is_one_mib() {
+    assert_eq!(DEFAULT_MAX_OUTPUT_BYTES, 1_048_576);
+}
+
+/// The join loop must wait for BOTH readers, not just the first one to finish.
+/// The mutant turns `out.is_none() && err.is_none()` into `||`, which breaks as
+/// soon as ONE reader has been joined -- so if stderr's reader is still working
+/// when stdout's finishes, stderr is never collected and the command's error
+/// output vanishes. That is a real bug, not a cosmetic one.
+///
+/// This is the case the older c2 test only caught by luck: with a plain
+/// `echo oops >&2` the child exits and BOTH pipes reach EOF at almost the same
+/// instant, so the two readers finish in the same poll and a join loop that
+/// stops at the first one still happens to collect both. Here a surviving
+/// subshell closes its stdout copy and holds stderr open, so stdout's reader
+/// finishes while stderr's is provably still running -- the mutant then drops
+/// stderr every time, not sometimes.
+#[test]
+fn m5_stderr_is_collected_even_when_stdout_finishes_first() {
+    let (root, outside, _t) = make_root();
+    // A surviving subshell closes ITS copy of stdout, keeps stderr open, and
+    // writes to stderr 50 ms later (well inside READER_GRACE, 200 ms). The main
+    // child closes its stdout and exits at once. So stdout's pipe has no writers
+    // and its reader finishes almost immediately, while stderr's reader is
+    // provably still running -- the one state in which a join loop that stops at
+    // the FIRST finished reader loses the other stream.
+    let o = run_sh(
+        &root,
+        "/home/work",
+        "(exec 1>&-; sleep 0.05; echo oops >&2) & exec 1>&-; exit 0",
+    );
+    assert_eq!(
+        o.stderr,
+        b"oops\n",
+        "stderr was dropped (got {:?}): the join loop must wait for BOTH readers",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert_eq!(o.stdout, b"", "stdout was closed by the child");
+    assert_eq!(o.status, ExitStatus::Exited(0));
     cleanup(&root, &outside);
 }
