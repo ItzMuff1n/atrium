@@ -137,6 +137,17 @@ answer to "is it done" is no, and that is the whole answer. This is the automati
 gate. It does not replace §10: `check.sh` and CI say the code passes, and only
 Muffin's end-of-phase run says a phase is signed off.
 
+**Nothing is pushed to `main` directly. Every change goes through a branch and a
+pull request.** `main` is protected by a repository ruleset that refuses direct
+pushes, force pushes and deletions, and will not merge a pull request until the
+required check is green. The workflow is: cut a branch, commit on it, push it,
+open a pull request, wait for `gh pr checks --watch` to report green, then merge
+with squash and delete the branch. **A direct `git push origin main` will be
+refused by GitHub** — if it is not, the protection has been lost and that is a
+finding to report, not a thing to work around. This rule is the mechanical form of
+the rule above: the branch-and-PR flow is what makes "both checks green for that
+commit" something GitHub enforces rather than something you remember to do.
+
 ---
 
 ## 7. Code that must be treated as dangerous
