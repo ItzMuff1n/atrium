@@ -24,8 +24,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # v7.0.1, not v4: v4 declares `using: node20` and GitHub is retiring the
+      # Node 20 runtime, which printed a deprecation warning on every run.
+      # v7.0.1 declares node24. Bumped 18 Sep 2026.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
 
       # rustup is preinstalled on GitHub's ubuntu-latest runners. This step
       # installs whatever rust-toolchain.toml names, together with the
@@ -43,8 +46,14 @@ jobs:
           cargo fmt --version
           cargo clippy --version
 
+      # v6.1.0, not v4, for the same Node 20 reason as checkout above. v6.1.0
+      # declares node24.
+      #
+      # ~/.cargo/bin/ is cached, which is what makes the cargo-deny install below
+      # a one-time cost: on later runs the binary is already in the restored
+      # cache and `cargo install` reports it as installed and exits.
       - name: Cache cargo registry and build output
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/bin/
@@ -55,6 +64,17 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      # Pinned to an exact version, not `cargo install cargo-deny`, so the gate
+      # cannot change under the project without an edit here. --locked so the
+      # tool's own dependency resolution cannot drift either. Pinned to the
+      # version installed and run locally, so a green local run and a green CI
+      # run are the same check. See scripts/check.sh step 5.
+      - name: Install cargo-deny (pinned)
+        run: cargo install --locked cargo-deny --version 0.20.2
+
+      - name: Show the cargo-deny version actually in use
+        run: cargo deny --version
 
       - name: Run the check
         run: bash scripts/check.sh
@@ -72,7 +92,7 @@ jobs:
       # have. Without it the comparison would silently have nothing to look at,
       # and the guard is written to fail in that case rather than pass.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -86,7 +106,7 @@ jobs:
         run: rustup show
 
       - name: Cache cargo registry and build output
-        uses: actions/cache@v4
+        uses: actions/cache@v6.1.0
         with:
           path: |
             ~/.cargo/bin/

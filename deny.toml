@@ -1,0 +1,83 @@
+# cargo-deny configuration — what this project is willing to depend on.
+# Run by `scripts/check.sh` (last step) and therefore by CI too. Docs:
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Written 18 Sep 2026, when the workspace's only external crate was proptest,
+# pinned to one exact version and used by one crate's tests. Every rule below is
+# meant to keep that true by default and make adding an external dependency a
+# deliberate act rather than a silent one.
+
+[graph]
+# Build scripts of dependencies get scanned for executables too. Cheap, and the
+# point of a supply-chain gate is not to skip the parts that run code.
+all-features = true
+
+[advisories]
+# RustSec advisories are fetched from the default RustSec database (the field is
+# omitted rather than restated, so it tracks the tool's default).
+#
+# Vulnerabilities and unsound code fail. Both are unconditional in cargo-deny
+# since the `vulnerability` / `unsound` fields were removed; there is deliberately
+# no threshold and no severity to tune.
+#
+# `all`, not the `workspace` default: an unmaintained crate is unmaintained
+# whether it is a direct dependency or four levels down.
+unmaintained = "all"
+yanked = "warn"
+
+[licenses]
+# `allow` is exactly the set of licences present in `cargo deny list` for this
+# workspace on 18 Sep 2026 -- and nothing else. Everything not listed is denied,
+# so a new dependency under a new licence fails the check until this list is
+# edited on purpose.
+#
+# Reported by `cargo deny list` (dev-dependencies included), by licence:
+#   MIT                                34 crates
+#   Apache-2.0                         34 crates
+#   Apache-2.0 WITH LLVM-exception      4 crates
+#   BSD-2-Clause                        1 crate
+#   LGPL-2.1-or-later                   2 crates
+# The two LGPL crates are r-efi 5.3.0 and 6.0.0, which are *dual-licensed*:
+# their expression is `MIT OR Apache-2.0 OR LGPL-2.1-or-later`, so MIT or
+# Apache-2.0 alone satisfies them and the LGPL branch is never exercised.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "LGPL-2.1-or-later",
+    "MIT",
+]
+
+# The external crates are dev-dependencies (proptest and what it brings in), and
+# dev-dependencies are NOT licence-checked by default -- "not used by downstream
+# crates, nor part of binary artifacts". This project disagrees: the whole point
+# of the gate is that nothing enters the tree unnoticed. Without this line
+# `cargo deny list` reports only the five workspace crates and no dependency
+# licences at all.
+include-dev = true
+
+# The five workspace crates carry no SPDX expression, and should not: they are not
+# published and not for reuse, and picking a licence is the owner's call, not an
+# agent's (AGENT-RULES.md). `private.ignore` exempts a workspace member that is
+# not published from the licence check, which is exactly this case -- scoped to
+# these five, unlike switching the `unlicensed` lint off for everything.
+#
+# This only works because each crate also sets `publish = false` in its Cargo.toml.
+# Both halves are required; `publish = false` alone and `private.ignore` alone
+# each do nothing here.
+private = { ignore = true }
+
+[bans]
+# Duplicate versions WARN rather than fail. Two versions of the same crate are
+# worth seeing, but the only external dependency here is a pinned dev-dependency,
+# and failing on transitivity it does not control would be a rule that costs more
+# attention than it buys. Warn means it is printed on every run without holding
+# a merge hostage.
+multiple-versions = "warn"
+
+[sources]
+# crates.io only. Anything from an unknown registry or unknown git URL fails:
+# a patch from a git branch is code that no index or audit trail vouches for.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
