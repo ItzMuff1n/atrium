@@ -127,6 +127,16 @@ touching the core, the plugin architecture is broken — report it.
 **Do not add a permission, a state, or an effect kind without saying so
 explicitly.** These are small fixed vocabularies by design.
 
+**"Done" means the checks passed — not that you said they did.** A task is done
+only when `scripts/check.sh` passes locally **and** the CI run on GitHub is green
+for that commit. Both, for that commit: a green run from an earlier commit is not
+evidence about this one. **A self-report is never evidence of done** — not your own
+summary, not a tick you did not read, not a run you are recalling rather than
+quoting. If either check has not been run against the commit in question, the
+answer to "is it done" is no, and that is the whole answer. This is the automatic
+gate. It does not replace §10: `check.sh` and CI say the code passes, and only
+Muffin's end-of-phase run says a phase is signed off.
+
 ---
 
 ## 7. Code that must be treated as dangerous
