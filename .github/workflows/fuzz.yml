@@ -101,18 +101,23 @@ jobs:
           restore-keys: |
             nightly-toolchain-
 
-      # ~/.cargo/bin is what makes the pinned cargo-fuzz install a one-time cost
-      # on the scheduled run, and the registry is what makes the resolver's
-      # dependency build a cache hit. Keyed on the files that would invalidate it
-      # -- the fuzz crate has its own lockfile, because it is not a workspace
-      # member -- so a dependency change is what rebuilds it, not the calendar.
-      # No `runner.os` in the key: this workflow only ever runs on Linux.
-      - name: Restore cargo registry and binaries
+      # ~/.cargo/bin is what makes the pinned cargo-fuzz install cheap after the
+      # first run, and the registry is what makes the resolver's dependency build
+      # a cache hit. Keyed on the files that would invalidate it -- the fuzz crate
+      # has its own lockfile, because it is not a workspace member -- so a
+      # dependency change is what rebuilds it, not the calendar. No `runner.os`
+      # in the key: this workflow only ever runs on Linux.
+      #
+      # NOTE: the registry is cached WITHOUT ~/.cargo/bin, and that split is
+      # deliberate. The install reads the registry, never a staged binary, so
+      # restoring ~/.cargo/bin bought nothing and produced a run-to-run trap: a
+      # stale cargo-fuzz binary coming back from the cache, and a `cargo install`
+      # that then refused to overwrite a binary whose recipe had moved on.
+      - name: Restore the cargo registry
         uses: actions/cache/restore@v6.1.0
         id: cargo-cache
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
@@ -129,10 +134,17 @@ jobs:
       # Pinned to the exact version used locally, for the same reason
       # check.yml pins cargo-deny: a green local run and a green CI run have to
       # mean the same thing, and the fuzzer's own behaviour must not change under
-      # the project without an edit here. On a warm ~/.cargo/bin cache this
-      # reports the binary as already installed and exits, so it costs seconds.
+      # the project without an edit here.
+      #
+      # `--force` is load-bearing, not hygiene. `cargo install` REFUSES to
+      # overwrite an existing binary in its destination ("binary `cargo-fuzz`
+      # already exists in destination", exit 101), so a cached ~/.cargo/bin made
+      # every run after the first die here. The binary is no longer restored from
+      # cache, but the force keeps the step honest if one is ever present from a
+      # runner image or a future cache edit. The registry is cached, so this is a
+      # recompile, not a re-download.
       - name: Install cargo-fuzz (pinned)
-        run: cargo install --locked cargo-fuzz --version 0.13.2
+        run: cargo install --locked --force cargo-fuzz --version 0.13.2
 
       - name: Show the versions actually in use
         run: |
@@ -150,12 +162,11 @@ jobs:
           path: ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu
           key: nightly-toolchain-${{ runner.os }}
 
-      - name: Save cargo registry and binaries
+      - name: Save the cargo registry
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6.1.0
         with:
           path: |
-            ~/.cargo/bin/
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
