@@ -15,12 +15,38 @@
 set -u
 
 ROOT="${1:-/tmp/atrium-handtest-1b}"
-BIN="./target/debug/atrium-resolver"
+
+# Find the resolver binary in the WORKSPACE target directory, not "here".
+#
+# `cargo build` in a cargo workspace puts binaries in the workspace root's
+# target/debug, whatever directory it is run from. The previous version used
+# `./target/debug/atrium-resolver` relative to the current directory, so run
+# from `crates/resolver/` it looked in `crates/resolver/target/debug/` — which
+# is NOT where the build writes. That path only ever worked because a stale
+# binary from an earlier session happened to be sitting there, and the
+# `[ ! -x ]` guard then skipped rebuilding. On 18 Sep 2026 that stale binary
+# still accepted the very escape section N tests for, so running the gate from
+# the crate directory reported the escape as fixed when it was not.
+#
+# Resolve to the workspace root explicitly and refuse to guess.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$REPO_ROOT/target/debug/atrium-resolver"
 
 if [ ! -x "$BIN" ]; then
-    echo "building..." >&2
-    cargo build >/dev/null 2>&1 || { echo "cargo build failed" >&2; exit 2; }
+    echo "building (no binary at $BIN)..." >&2
+    ( cd "$REPO_ROOT" && cargo build >/dev/null 2>&1 ) \
+        || { echo "cargo build failed" >&2; exit 2; }
 fi
+
+if [ ! -x "$BIN" ]; then
+    echo "hand-test-1b: no resolver binary at $BIN after building." >&2
+    echo "  The workspace build writes there; if it is missing, the build failed." >&2
+    exit 2
+fi
+# Report which binary is under test. A hands-on pass is only worth as much as
+# the artefact it ran, and this line makes a stale one visible in the output.
+echo "binary under test: $BIN"
+echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"
 
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
