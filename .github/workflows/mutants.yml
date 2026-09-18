@@ -198,15 +198,17 @@ jobs:
           esac
 
       # Each shard runs on its own runner, so their mutants.out directories
-      # cannot collide; this copy exists so the artifact has a shard-specific
-      # name and the report job can tell which shard produced what.
+      # cannot collide. The upload names the artifact per shard instead of
+      # wrapping it in a shard-named directory: wrapping it produced
+      # `mutants-shard-0/mutants-shard-0/mutants.out/...` once the artifact was
+      # downloaded again, and the reporter's path glob then found nothing. Both
+      # the wrapper and the one-level-deep assumption are gone.
       - name: Keep this shard's results
         if: always()
         run: |
-          mkdir -p mutants-shard-${{ matrix.shard }}
           if [ -f mutants.out/outcomes.json ]; then
-            cp -r mutants.out "mutants-shard-${{ matrix.shard }}/"
-            echo "results copied for this shard"
+            echo "results present for this shard"
+            python3 -c "import json;d=json.load(open('mutants.out/outcomes.json'));print('total=%s missed=%s caught=%s timeout=%s unviable=%s' % (d['total_mutants'],d['missed'],d['caught'],d['timeout'],d['unviable']))"
           else
             echo "this shard produced no outcomes.json -- either it was assigned no mutants, or it failed before testing"
           fi
@@ -220,7 +222,7 @@ jobs:
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: |
-            mutants-shard-${{ matrix.shard }}/
+            mutants.out/
             mutants-shard-${{ matrix.shard }}.log
           if-no-files-found: warn
 
