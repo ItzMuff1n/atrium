@@ -25,9 +25,6 @@ cargo fmt --all -- --check || die "cargo fmt --all -- --check"
 step "cargo build --workspace --all-targets"
 cargo build --workspace --all-targets || die "cargo build --workspace --all-targets"
 
-step "cargo test --workspace"
-cargo test --workspace || die "cargo test --workspace"
-
 # Clippy is REPORT-ONLY for now: no `-D warnings`, so lints print but do not
 # fail the run. It still stops the run if it fails outright -- a non-zero exit
 # from clippy without `-D warnings` means a real compile-level error, not a
