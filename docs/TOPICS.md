@@ -65,6 +65,13 @@ Between tasks, compute the topic's spend as the **sum of every token column in
 during the topic. **Record the child session ids as you go** — without them the sum
 is wrong and silently incomplete. **Stop when the spend passes the plan's budget.**
 
+**Read-only audit or verification work that Muffin asks for after the topic's
+tasks have stopped does not count against that topic's budget** — the budget
+measures what it cost to *do* the topic, and work ordered afterwards to check it
+is a separate thing that would otherwise make every closed topic's figure drift
+upwards. Record such spend separately and name it as audit rather than folding it
+into the topic total.
+
 ## 8. `needs-muffin`
 
 `needs-muffin` means **only** two things: a **hand-test**, or a **product decision**

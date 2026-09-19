@@ -28,3 +28,12 @@ spikes/**/linux/flutter/ephemeral/
 # that is noise in every future diff that touches those scripts.
 __pycache__/
 *.pyc
+
+# cargo-mutants working directories. A `cargo mutants` run writes its verdicts
+# and the mutated source snapshots here, and renames the previous run to
+# `mutants.out.old` rather than deleting it -- so both appear as untracked after
+# every run. They are tool output, reproducible by re-running the tool, and must
+# never be committed; the mutants topic's own rule is `rm -rf mutants.out*`
+# before staging, which is easy to forget and leaves the tree dirty.
+mutants.out/
+mutants.out.old/
