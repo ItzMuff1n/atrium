@@ -1,26 +1,34 @@
 name: review
 
-# The AI reviewer. One job, one required check.
+# The AI reviewer. ADVISORY -- it runs on every pull request and posts its
+# findings as a comment, but it never blocks a merge.
 #
-# What it does NOT do: it does not replace `test-guard` or the tests. It reads
-# the diff and the body of every issue the PR closes, asks a model whether the
-# change is legitimate, and fails the job when the answer is "fail". It is a
-# second opinion on the SHAPE of a change -- weakened assertions, out-of-scope
-# edits, source edited to satisfy mutation testing, workarounds, secrets -- not
-# a substitute for the tests being right.
+# Why it is advisory, in two lines:
+# At temperature 0 it returned opposite verdicts on byte-identical input -- the same
+# 1015-byte diff PASSed in run 35409248445 attempt 2 and FAILed with 3 findings in run
+# 35409891280 attempt 1 (file sha256 5f142030e0cc...efbb both times).
+# A required check that answers differently on identical input is a deadlock, not a gate:
+# `main` has `current_user_can_bypass: never`, so a false fail cannot be overridden and a
+# false pass ships unreviewed. Deterministic scripts block; a model advises.
 #
-# Why it can fail a PR at all: the human owner does not read code, so a change
-# that weakens a test to make CI green has no other obstacle. `test-guard`
-# catches some of that mechanically; this catches the cases a diff comparison
-# cannot express, and it is the only check here that reads the linked issue and
-# asks whether the diff is about it.
+# What it does NOT do: it does not replace `check` or the guard. It reads the
+# diff and the body of every issue the PR closes, asks a model whether the change
+# is legitimate, and reports what it found. It is a second opinion on the SHAPE
+# of a change -- weakened assertions, out-of-scope edits, source edited to
+# satisfy mutation testing, workarounds, secrets -- not a substitute for the
+# tests being right.
+#
+# Why it is worth having even advisory: the human owner does not read code, so a
+# change that weakens a test to make CI green has no other obstacle. It reads the
+# linked issue and asks whether the diff is about it, which is the one thing no
+# diff comparison can express.
 #
 # The judgement is a model's, so it is treated as fallible in both directions:
-# a "fail" is a claim to be argued with in the PR thread, not a verdict on the
-# author. What is NOT fallible is the plumbing -- a missing secret, an
-# unparseable answer, or an oversized diff all fail the check (see
-# scripts/review-pr.py), because "I could not review this" must never render as
-# a pass.
+# a `fail` is a claim to be argued with in the PR thread, not a verdict on the
+# author, and it does not stop the merge. What is NOT fallible is the plumbing --
+# a missing secret, an unparseable answer, or an oversized diff are all reported
+# as a reviewer that could not produce a verdict, because "I could not review
+# this" must never render as a clean pass.
 
 on:
   pull_request:
@@ -52,6 +60,21 @@ jobs:
           python3 --version
           gh --version | head -1
 
+      # ADVISORY: this step always exits 0. The verdict is reported in three
+      # places instead of enforced by an exit code -- the comment the script
+      # posts on the PR (the durable record), the job summary below, and an
+      # annotation line.
+      #
+      # The script's own exit code is still read, because it distinguishes two
+      # things that must not be confused:
+      #
+      #   * `review: verdict=pass` / `verdict=fail` -- the reviewer produced a
+      #     judgement. A `fail` is reported as a warning; it does not block.
+      #   * exit 1 with no verdict line -- the reviewer could NOT review: no
+      #     secret, a timeout, an unparseable answer, an oversized diff. Also
+      #     reported and also non-blocking, but labelled differently, because
+      #     "no review happened" is not "the review passed".
+      #   * exit 2+ -- not a state the script produces; surfaced as an error.
       - name: Review the pull request
         env:
           # The secret is passed as an env var, never interpolated into a shell
@@ -61,11 +84,48 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set +e
-          python3 scripts/review-pr.py --pr "$PR_NUMBER"
+          OUT="$(python3 scripts/review-pr.py --pr "$PR_NUMBER" 2>&1)"
           rc=$?
           set -e
-          case "$rc" in
-            0) echo "review passed" ;;
-            1) echo "::error::the AI review did not pass -- see the comment on this PR"; exit 1 ;;
-            *) echo "::error::the reviewer exited $rc, which is not a verdict it produces"; exit 1 ;;
+          printf '%s\n' "$OUT"
+
+          # The machine-readable verdict line, if the reviewer got that far.
+          VERDICT="$(printf '%s\n' "$OUT" | grep -oE '^review: verdict=(pass|fail)' | tail -1 | sed 's/.*=//')"
+
+          if [ -n "$VERDICT" ]; then
+            SUMMARY="**Verdict: \`$VERDICT\`.**"
+          elif [ "$rc" -eq 0 ]; then
+            SUMMARY="**No verdict line, exit 0** -- the reviewer skipped this PR (dependabot)."
+          else
+            SUMMARY="**The reviewer could not produce a verdict** (exit $rc). The change has NOT been reviewed; this is not a pass."
+          fi
+
+          {
+            echo "## AI review -- advisory, does not block a merge"
+            echo
+            echo "$SUMMARY"
+            echo
+            echo "This check is advisory by decision, not by accident: at temperature 0 it"
+            echo "returned opposite verdicts on byte-identical input on 19 Sep 2026 (see the"
+            echo "header of \`.github/workflows/review.yml\`). Deterministic scripts block; a"
+            echo "model advises."
+            echo
+            echo "<details><summary>Reviewer output</summary>"
+            echo
+            echo '```'
+            printf '%s\n' "$OUT"
+            echo '```'
+            echo
+            echo "</details>"
+          } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          case "$VERDICT" in
+            pass) echo "review: advisory verdict = PASS -- not blocking" ;;
+            fail) echo "::warning::the AI review returned FAIL -- read the comment on this PR. ADVISORY: the merge is NOT blocked." ;;
+            "")   if [ "$rc" -eq 0 ]; then
+                    echo "review: advisory -- skipped"
+                  else
+                    echo "::warning::the AI review could not produce a verdict (exit $rc) -- the change has NOT been reviewed. ADVISORY: the merge is NOT blocked."
+                  fi ;;
           esac
+          exit 0
