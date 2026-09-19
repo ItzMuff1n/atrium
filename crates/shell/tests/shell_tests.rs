@@ -1156,6 +1156,19 @@ fn m4_the_default_output_cap_is_one_mib() {
     assert_eq!(DEFAULT_MAX_OUTPUT_BYTES, 1_048_576);
 }
 
+/// `m4` pins the constant's value. What nothing checked is that the constant is
+/// what a caller who does not set it actually gets: `RunOptions::default()` is
+/// the path a real run takes, and if it stopped carrying
+/// `DEFAULT_MAX_OUTPUT_BYTES` the documented cap would be wrong for every run
+/// while `m4` stayed green. That is a value the mutant at 40:50 changes, so it
+/// is also the behaviour the report is about.
+#[test]
+fn m6_default_run_options_carry_the_documented_output_cap() {
+    let opts = RunOptions::default();
+    assert_eq!(opts.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
+    assert_eq!(opts.max_output_bytes, 1_048_576);
+}
+
 /// The join loop must wait for BOTH readers, not just the first one to finish.
 /// The mutant turns `out.is_none() && err.is_none()` into `||`, which breaks as
 /// soon as ONE reader has been joined -- so if stderr's reader is still working
