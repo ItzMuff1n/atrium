@@ -763,16 +763,20 @@ else
     wf_commands() {
       git show "$1:$2" 2>/dev/null | awk '
         /^[[:space:]]*-[[:space:]]*uses:[[:space:]]*/ {
-          v=$0; sub(/^[[:space:]]*-[[:space:]]*uses:[[:space:]]*/,"",v); print "uses:" v; next }
+          v=$0; sub(/^[[:space:]]*-[[:space:]]*uses:[[:space:]]*/,"",v)
+          sub(/@.*$/,"",v); gsub(/[[:space:]]/,"",v); print "uses:" v; next }
         /^[[:space:]]*uses:[[:space:]]*/ {
-          v=$0; sub(/^[[:space:]]*uses:[[:space:]]*/,"",v); print "uses:" v; next }
+          v=$0; sub(/^[[:space:]]*uses:[[:space:]]*/,"",v)
+          sub(/@.*$/,"",v); gsub(/[[:space:]]/,"",v); print "uses:" v; next }
         /^[[:space:]]*run:[[:space:]]*[^|>[:space:]]/ {
-          v=$0; sub(/^[[:space:]]*run:[[:space:]]*/,"",v); print "run:" v; next }
+          v=$0; sub(/^[[:space:]]*run:[[:space:]]*/,"",v)
+          gsub(/[[:space:]]+/," ",v); sub(/[[:space:]]+$/,"",v); print "run:" v; next }
         /^[[:space:]]*run:[[:space:]]*[|>][-+]?[[:space:]]*$/ { inblock=1; next }
         inblock==1 {
           if ($0 ~ /^[[:space:]]*$/) next
           if ($0 ~ /^[[:space:]]*#/) next
-          v=$0; sub(/^[[:space:]]*/,"",v); print "run:" v; inblock=0; next }
+          v=$0; gsub(/^[[:space:]]+|[[:space:]]+$/,"",v)
+          gsub(/[[:space:]]+/," ",v); print "run:" v; inblock=0; next }
       ' | sort -u
     }
     base_cmds="$(wf_commands "$MB" "$f")"
