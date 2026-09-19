@@ -102,22 +102,42 @@ pr_body() {
 }
 
 parse_overrides() {
-  local body line cat reason
+  local body line cat reason infence=0
   body="$(pr_body || true)"
   [ -n "$body" ] || return 0
   while IFS= read -r line; do
+    # Documentation must not read as a use of the hatch. Three cheap rules, each
+    # added because something real tripped over it:
+    #
+    #   1. Skip fenced code blocks -- that is where the syntax gets documented.
+    #   2. The token must start at COLUMN 0. A real override is a plain
+    #      paragraph line; an indented example (a markdown code block) is not.
+    #   3. A placeholder in the category slot (`<category>`) is documentation,
+    #      not a mistake, so it is skipped silently rather than reported
+    #      malformed. A real typo (`handtest`) still gets reported.
+    #
+    # Rule 1 and 2 came from PR #41's own body, which documents the hatch and was
+    # reported as two malformed overrides before this.
     case "$line" in
-      *GUARD-OVERRIDE:*) : ;;
+      '```'*) [ "$infence" -eq 0 ] && infence=1 || infence=0; continue ;;
+    esac
+    [ "$infence" -eq 0 ] || continue
+
+    case "$line" in
+      GUARD-OVERRIDE:*) : ;;
       *) continue ;;
     esac
-    # everything after the last GUARD-OVERRIDE:
-    line="${line##*GUARD-OVERRIDE:}"
+    line="${line#GUARD-OVERRIDE:}"
     line="$(printf '%s' "$line" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
     cat_name="${line%%:*}"
     cat_name="$(printf '%s' "$cat_name" | tr -d '[:space:]')"
     reason=""
     case "$line" in
       *:*) reason="$(printf '%s' "${line#*:}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')" ;;
+    esac
+    # An angle-bracket placeholder is documentation, not a malformed override.
+    case "$cat_name" in
+      *'<'*|*'>'*) continue ;;
     esac
     if ! printf '%s' " $CATEGORIES " | grep -q " ${cat_name} "; then
       # Fail closed: a malformed override waives nothing, and says so.
