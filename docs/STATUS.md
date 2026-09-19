@@ -503,6 +503,42 @@ not move entries; the gate is his hands-on pass).
 required before Phase 5**, because 2b deliberately leaves a command able to reach
 the host. See the 2e entry below.
 
+### Topic — mutation cleanup: resolver and fileops mutants (Muffin, 19 Sep 2026)
+
+**This is the topic's sign-off, and it is signed off hands-on by Muffin.**
+Recorded at his report in chat; the gate was his, run on merged `main` (PRs #53
+and #54, `main` at `2376a74`).
+
+**What Muffin ran, from the repo root:**
+
+```
+cargo mutants -p atrium-resolver
+cargo mutants -p atrium-fileops
+```
+
+**What they printed, his exact counts:**
+
+- `atrium-resolver` — **65 tested, 57 caught, 8 unviable, 0 missed**
+- `atrium-fileops` — **53 tested, 49 caught, 4 unviable, 0 missed**
+
+Both match the expected output recorded in issue #55, so the topic's headline
+claim holds under his own run: **zero missed mutants in both crates.**
+
+**What the topic was.** The two children of the weekly mutation run that still
+had uncovered mutants — `crates/resolver/src/lib.rs` (issue #23, 10 mutants) and
+`crates/fileops/src/lib.rs` (issue #24, 21 mutants), 31 in total. Of those, 21
+were killed by tests and 10 are recorded as equivalent mutations with reasons in
+`.cargo/mutants.toml`. No production code was changed: the work is tests plus
+those recorded reasons.
+
+**Not a phase.** This topic touched no phase and moved no phase gate; the phases
+above are untouched by it. `crates/resolver` and `crates/fileops` remain signed
+off as they were.
+
+**Recorded at Muffin's instruction** (`AGENT-RULES.md` §10 — agents may not move
+entries into this section on their own judgement; this entry is written because he
+directed it and reported the run himself).
+
 ### Pre-project research
 
 **Flutter renders correctly on the target hardware.** *(Sep 2026)*
