@@ -33,7 +33,7 @@ Consequences you must internalise:
 | `STATUS.md` | What is verified vs merely claimed. **You may only append.** |
 | `OPEN-QUESTIONS.md` | Genuinely undecided items. |
 | `AGENT-RULES.md` | This file. |
-| `QUEUE.md` | The "work the queue" routine: issue order, one-PR-per-issue, stop points. |
+| `TOPICS.md` | The topic routine: plan first, the Lead/builder split, spend, parking, close. |
 
 **If code and `DESIGN.md` disagree, stop and say so.** Do not silently
 "fix" either one. One of them is wrong and the user decides which.
