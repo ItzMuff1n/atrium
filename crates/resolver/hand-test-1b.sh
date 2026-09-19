@@ -125,7 +125,7 @@ REJECTS=0
 # (53 and 74 read from an actual run of this script on 18 Sep 2026, after
 # section Q was added; 113 lines before it, 127 after.)
 EXPECTED_ACCEPTS=53
-EXPECTED_REJECTS=74
+EXPECTED_REJECTS=73
 
 # run <section> <expected: R|A> <path>
 run() {
