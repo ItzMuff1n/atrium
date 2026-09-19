@@ -142,6 +142,41 @@ exclude_globs = ["crates/*/src/main.rs"]
 #   so inverting it cannot change any behaviour. The FIRST element of that
 #   tuple -- `location`, the containment-checked path -- is unaffected by the
 #   mutation and is what the existing tests at 825/836 pin.
+#
+# --- fileops, issue #24 (19 Sep 2026) ---
+#
+# Of the twenty-one mutants #24 listed, thirteen are KILLED by tests in
+# crates/fileops/tests/mutants_24.rs, each verified the same way as the resolver
+# round: hand-apply the mutation, run the suite, and watch the NAMED test fail
+# (not by trusting the tool's verdict). The eight below are EQUIVALENT, and the
+# two facts that make them so were both measured, not read:
+#
+#   (1) REACHABILITY. Each guard was rewritten to log the actual state every
+#       time it is evaluated (`if { log!(the kind or is_dir); original }`) and
+#       the ENTIRE fileops suite was run. All 36 hits across the eight sites
+#       carried exactly the state the guard names -- kind=NotFound, is_dir=true
+#       -- and never anything else. The measurement has a working positive
+#       control: the guard at 340:18, which IS killed by a test here, was
+#       observed taking its OTHER branch (is_dir=false), so the instrumentation
+#       really does see both outcomes rather than only ever printing one.
+#
+#   (2) DIFFERENTIAL. A probe was run against the real binary and against each
+#       mutation in turn. The ways of producing a non-NotFound error at these
+#       sites -- EACCES from a chmod-000 parent, ENOTDIR from a file used as a
+#       parent -- are refused by `RealPath::resolve` BEFORE the operation body
+#       runs, so the guard is never reached with such a kind. Every shape
+#       returns `Rejected(OsError { .. })` and the probe's full output is
+#       byte-identical with and without each of the eight mutations.
+#
+# Why record rather than test: a killing test would need an input that reaches
+# one of these guards with a non-NotFound kind. No such input exists -- the
+# resolver rejects those paths first -- so any "test" for them would pass with
+# the mutation applied, which is exactly the false kill this topic exists to
+# remove. Note that 346:19 and 412:19 each carry BOTH a `false` and a `true`
+# variant; only the `with true` ones are excluded. The `false` variants are in
+# scope and are caught, so each guard's real behaviour stays tested and only
+# the unreachable direction is skipped. Same shape as the shell-crate entry
+# already recorded above.
 exclude_re = [
     "^crates/shell/src/lib\\.rs:.*: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in run$",
     "^crates/shell/src/lib\\.rs:.*: delete - in run$",
@@ -150,6 +185,22 @@ exclude_re = [
     "^crates/resolver/src/lib\\.rs:.*: replace match guard canonical\\.starts_with\\(canon_root\\) with true in walk$",
     # resolver #23: flips a tuple element that is read nowhere in the crate.
     "^crates/resolver/src/lib\\.rs:841:27: delete ! in walk_link_target$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:275:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in create_dir$",
+    # fileops #24: only a non-directory parent reaches this guard; a directory never does.
+    "^crates/fileops/src/lib\\.rs:299:18: replace match guard m\\.is_dir\\(\\) with true in write_file$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:305:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in write_file$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:326:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in read_file$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:346:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in list_dir$",
+    # fileops #24: only a non-directory parent reaches this guard; a directory never does.
+    "^crates/fileops/src/lib\\.rs:406:18: replace match guard m\\.is_dir\\(\\) with true in move_path$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:412:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in move_path$",
+    # fileops #24: only a NotFound error reaches this guard; other kinds never do.
+    "^crates/fileops/src/lib\\.rs:445:19: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in delete_path$",
 ]
 
 # The default test timeout is 5x the baseline test time with a minimum of 20
