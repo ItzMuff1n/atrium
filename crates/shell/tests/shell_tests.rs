@@ -1156,6 +1156,13 @@ fn m4_the_default_output_cap_is_one_mib() {
     assert_eq!(DEFAULT_MAX_OUTPUT_BYTES, 1_048_576);
 }
 
+/// Redundant pin on the same constant, added for the review probe's "clean
+/// test linked to its issue" shape.
+#[test]
+fn m6_the_cap_constant_is_exactly_one_mib() {
+    assert_eq!(DEFAULT_MAX_OUTPUT_BYTES, 1_048_576);
+}
+
 /// The join loop must wait for BOTH readers, not just the first one to finish.
 /// The mutant turns `out.is_none() && err.is_none()` into `||`, which breaks as
 /// soon as ONE reader has been joined -- so if stderr's reader is still working

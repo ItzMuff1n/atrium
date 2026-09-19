@@ -67,7 +67,7 @@ warning dialogs show recorded facts instead of risk scores.
 
 ### 2.1 Hardware verification (passed, Sep 2026)
 
-Tested on the target machine: i7-14700KF, RTX 3080 10GB, Nobara Linux, KDE
+Tested on the target machine: i7-14700KF, RTX 5090 32GB, Arch Linux, KDE
 Plasma 6, Wayland, 2560x1440.
 
 | Load | FPS | Avg frame |
