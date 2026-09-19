@@ -9,17 +9,33 @@
 //!   and the `<= 64` boundary. Pinned through `NameTooLong`'s Display, in
 //!   CHARACTERS, because `MAX` counts chars while the rejection counts bytes.
 //! - `499:32` — the final containment check in `walk` on a pending (absent)
-//!   remainder, mutated to unconditional `true`. Safety-relevant: a path that
-//!   canonicalises outside the root must be refused.
+//!   remainder, mutated to unconditional `true`. Safety-relevant. NOT KILLED:
+//!   proven equivalent — `current` (and so the `out` this prefix comes from)
+//!   is inside the root on every assignment path, so the guard can never take
+//!   its false branch. Instrumented over a 13k-path corpus: 329 hits, all
+//!   `true`, none false, none `None`. Recorded in `.cargo/mutants.toml`.
 //! - `665:33` — `NotFound` vs other OS errors after a `..` canonicalise
-//!   failure inside `resolve_from` (above_root vs os_error).
+//!   failure inside `resolve_from` (above_root vs os_error). This one needs
+//!   the `..` to sit INSIDE a symlink target: a `..` written directly in the
+//!   virtual path is refused by `walk`'s own arm (line 439) and never reaches
+//!   `resolve_from`, which is why the earlier shape here passed under the
+//!   mutation. Witness: a link whose target is `sub/file.txt/..` — the
+//!   canonicalise gives ENOTDIR, and `==` vs `!=` picks the reason.
 //! - `686:26` x2 — the symlink-hop ceiling `*hops > MAX_LINK_HOPS` mutated to
 //!   `==` and `>=`. A chain of exactly 40 hops must still be accepted; 41 or a
 //!   loop must be refused.
 //! - `698:51`, `698:54` — the hop label: the agent's own step while the walk
 //!   is inside the root; the host spelling once it has left.
-//! - `841:27` — `delete !` in `walk_link_target`: a chain that ends outside
-//!   the root must be refused, not accepted. Safety-relevant.
+//! - `841:27` — `delete !` in `walk_link_target`. NOT KILLED: proven
+//!   equivalent. The flipped value is the tuple's third element (`any_absent`),
+//!   which reaches `absent_seen` in `walk` and is returned — and `absent_seen`
+//!   is read NOWHERE; `walk`'s only caller discards it (`map(|(p, _absent)| p)`,
+//!   line 352). The first element, `location`, is untouched by the mutation and
+//!   is what the containment tests below pin. Recorded in `.cargo/mutants.toml`.
+//!
+//! Eight of the ten are killed by the tests in this file; the two above are
+//! equivalent and are recorded with reasons in `.cargo/mutants.toml` instead,
+//! because a "test" for them would pass with the mutation applied.
 
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -193,12 +209,13 @@ fn truncate_display_boundary_is_64_characters() {
 // containment check). 499:32 and 841:27 are safety-relevant.
 // ---------------------------------------------------------------------------
 
-/// 841:27 (`delete !` in `walk_link_target`): a chain whose END lands
-/// outside the root must be refused. Here `out` is a dangling absolute
-/// symlink (target does not exist), which is where this check rather than
-/// the per-hop `seen_out` recording does the refusing. With `!` deleted the
-/// guard inverts and this path is ACCEPTED, pointing outside — the kill is
-/// the verdict plus the variant.
+/// A dangling absolute symlink whose target is outside the root must be
+/// refused, naming the agent's step and the outside target.
+///
+/// This test is NOT a killer for 841:27, and its earlier comment said it was.
+/// The refusal comes from `walk_link_target`'s per-hop containment check
+/// (line 825); 841:27 flips the third tuple element, which is never read. See
+/// the module docs and `.cargo/mutants.toml`. Kept for the behaviour it pins.
 #[test]
 fn dangling_absolute_link_ending_outside_is_refused() {
     let f = Fixture::new("dangling-out");
@@ -224,10 +241,11 @@ fn dangling_absolute_link_ending_outside_is_refused() {
     );
 }
 
-/// 841:27 again, via a RELATIVE symlink target (`sub/rel-out -> ../out`):
-/// the target hop lands outside the root through a different base, and the
-/// same final containment check is what refuses it. Also pins that the
-/// outside position is named by the host spelling of its location.
+/// A dangling RELATIVE symlink target (`sub/rel-out -> ../../outside`): the
+/// hop lands outside the root through a different base, and the outside
+/// position is named by the host spelling of its location. Like the absolute
+/// case above, this pins behaviour and is NOT a killer for 841:27 (that
+/// mutant flips an unread value).
 #[test]
 fn dangling_relative_link_ending_outside_is_refused() {
     let f = Fixture::new("dangling-rel-out");
@@ -325,37 +343,25 @@ fn link_chain_past_max_hops_is_refused_as_a_loop() {
 }
 
 /// 665:33 (`==` mutated to `!=` on the NotFound check in resolve_from's `..`
-/// arm): a `..` inside a symlink-target walk whose canonicalise fails with
-/// NotFound must be reported with the CLIMB reason (`above_root`), not the
-/// OS-error reason. The shape: `l -> <root>/d`, path `/l/x/../../missing`
-/// — inside the link walk, `x/..` cancels, the next `..` from `<root>/d`
-/// reaches `<root>`, and the trailing absent `missing` is re-entered as the
-/// remainder (`/l/x/../missing` below exercises the same arm with a shorter
-/// climb). With `!=` the NotFound path falls to `os_error` and the message
-/// reads "the operating system refused" instead of "climbed above".
+/// arm): a `..` inside a symlink-target walk whose canonicalise fails must be
+/// reported with the OS's own reason (`os_error`), not the climb reason.
 ///
-/// (The exact verdict above is what the resolver SHOULD say if this arm
-/// fired on these shapes; probing showed these shapes actually resolve as
-/// accepted-remainder paths without passing through the NotFound arm — the
-/// arm fires on a `..` from a confirmed position whose canonicalise reports
-/// NotFound.)
+/// IMPORTANT, and established by running rather than reading: a `..` written
+/// directly in the virtual path does NOT reach this arm at all. `walk` has its
+/// own `..` handling (line 439) and refuses `/lf/..` there, so the assertions
+/// below pass under the mutation and are NOT what kills 665:33 — an earlier
+/// version of this comment claimed they were. The arm is only reached when the
+/// `..` is part of a symlink TARGET, because a target is walked by
+/// `resolve_from` and not by `walk`. The witness is in
+/// `parent_inside_symlink_target_off_a_file_reports_os_error`.
 #[test]
 fn notfound_parent_in_link_walk_reports_climb_not_os_error() {
     let f = Fixture::new("walk-parent-notfound");
-    // `l` points at `<root>/d`, a real dir. In the target walk for the
-    // SECOND component, `..` from `<root>/d` is canonically fine; what hits
-    // resolve_from's NotFound `..` arm is a confirmed position whose parent
-    // is gone — exactly what `d/x/../../missing` builds: after the hop into
-    // `d`, `x` does not exist (pending), so `..` pops pending lexically …
-    // This comment is written from probing, not from theory: the accepted
-    // shapes and the refused shape below are the observed behaviour, and
-    // the assertions pin the strings that distinguish the two arms.
     fs::create_dir_all(f.root.join("d")).unwrap();
     symlink(f.root.join("d"), f.root.join("l")).unwrap();
 
-    // The ENOTDIR arm: `l` resolves to the FILE `f`; `..` below a file is
-    // the OS's own refusal, and it is reported as such (ruling 2) — not as
-    // a climb. 665:33 must keep the non-NotFound half of this branch.
+    // `lf` resolves to the FILE `f`; a `..` below a file is the OS's own
+    // refusal (ruling 2), reported as such and not as a climb.
     fs::write(f.root.join("f"), b"x").unwrap();
     symlink(f.root.join("f"), f.root.join("lf")).unwrap();
     let e = rejects(&f, "/lf/..");
@@ -375,25 +381,112 @@ fn notfound_parent_in_link_walk_reports_climb_not_os_error() {
     assert_eq!(real, f.root.join("missing"));
 }
 
-/// 499:32 (pending-containment guard turned unconditional-true in `walk`) —
-/// safety-relevant. The guard fires when the walk ENDS with a non-empty
-/// pending remainder: the longest existing prefix of the result is
-/// canonicalised and must start with the canonical root. The existing suite
-/// only exercises it with inside results; this shape drives the probe
-/// outside the root: the LAST component is a symlink whose target is an
-/// absolute outside path with an absent tail. The target is absent, so
-/// `location` replaces `current` (outside the root) and the result is
-/// assembled as `current + pending`; the longest existing prefix of that
-/// out-path canonicalises to the outside host dir, and the guard is the
-/// ONLY check between that and acceptance.
+/// 665:33, the actual KILL. The `..` must sit inside a symlink TARGET so that
+/// `resolve_from` walks it: `sub/file.txt/..` makes `std::fs::canonicalize`
+/// fail with ENOTDIR, which is not NotFound, so the `==` arm falls through to
+/// `os_error`. With the mutant (`!=`) the ENOTDIR takes the `above_root`
+/// branch instead.
+///
+/// Verified by hand against both binaries: clean gives
+/// "the operating system refused ... (Not a directory (os error 20))", the
+/// mutant gives "the `..` step ... climbed above the environment root".
+#[test]
+fn parent_inside_symlink_target_off_a_file_reports_os_error() {
+    let f = Fixture::new("target-parent-enotdir");
+    fs::create_dir_all(f.root.join("sub")).unwrap();
+    fs::write(f.root.join("sub/file.txt"), b"z").unwrap();
+    // The TARGET carries the `..` after a file -- target walks use
+    // resolve_from, which is where 665:33 lives.
+    symlink("sub/file.txt/..", f.root.join("fENOTDIR")).unwrap();
+
+    let e = rejects(&f, "/fENOTDIR");
+    assert!(
+        matches!(e, ResolveError::OsError { .. }),
+        "a `..` after a FILE inside a symlink target is the OS's own refusal \
+         (ENOTDIR), not a climb above the root -- with the mutant it becomes \
+         TraversalAboveRoot. got: {}",
+        e
+    );
+    assert!(
+        e.to_string().contains("Not a directory"),
+        "the reason must be the OS's own ENOTDIR text, got: {}",
+        e
+    );
+    assert!(
+        !e.to_string().contains("climbed above"),
+        "this path must NOT be named as a climb, got: {}",
+        e
+    );
+}
+
+/// 698:51 (`||` mutated to `&&` in the hop-label choice) — the actual KILL.
+///
+/// The label is only observable when the hop that computed it raises an error
+/// INSIDE its own recursion: `walk_link_target` reports the FIRST departure's
+/// label out of `seen_out` (line 836), so in every simpler chain the message
+/// comes from there and is unaffected.
+///
+/// Shape: `o1` (inside) -> `b1` (outside) -> `i1` (back inside), and `i1`'s
+/// target is `sub/file.txt/..`, which fails with ENOTDIR and names
+/// `origin_label` -- the label computed at that hop. At that hop `seen_out` is
+/// set AND `current` is back inside, the one combination where `||` and `&&`
+/// disagree:
+///   clean (`||`)  -> label = current.display()    = "<root>/i1"
+///   mutant (`&&`) -> label = origin_label passed  = "<outside>/b1"
+/// Verified by hand against both binaries.
+#[test]
+fn hop_label_after_leaving_and_returning_names_the_current_link() {
+    let f = Fixture::new("hop-label-outback");
+    let outside = f.root.parent().unwrap().join("m23-outside");
+    let _ = fs::remove_dir_all(&outside);
+    fs::create_dir_all(&outside).unwrap();
+    fs::create_dir_all(f.root.join("sub")).unwrap();
+    fs::write(f.root.join("sub/file.txt"), b"z").unwrap();
+
+    // inside -> outside -> inside, then the erroring target.
+    symlink(&outside.join("b1"), f.root.join("o1")).unwrap();
+    symlink(f.root.join("i1"), outside.join("b1")).unwrap();
+    symlink("sub/file.txt/..", f.root.join("i1")).unwrap();
+
+    let e = rejects(&f, "/o1");
+    let msg = e.to_string();
+    // The hop that errored is the one back inside the root, so its label is
+    // the link's own host path there -- not the spelling of the outside hop
+    // that came before it.
+    assert!(
+        msg.contains(&f.root.join("i1").display().to_string()),
+        "the refusal must name the link whose target was walked (`{}`), got: {}",
+        f.root.join("i1").display(),
+        msg
+    );
+    assert!(
+        !msg.contains(&outside.join("b1").display().to_string()),
+        "the refusal must NOT name the earlier outside hop (`{}`) -- that is \
+         the mutant's spelling, got: {}",
+        outside.join("b1").display(),
+        msg
+    );
+
+    let _ = fs::remove_dir_all(&outside);
+}
+
+/// A dangling ABSOLUTE symlink whose target is outside the root with an
+/// absent tail must be refused, naming the outside host location it reached.
+///
+/// This test is NOT a killer for 499:32, and its earlier comment said it was
+/// — a claim disproved by running: the suite passes with the 499 mutation
+/// applied. The refusal here comes from `walk_link_target`'s per-hop check
+/// (line 825), which fires first because the hop's location never starts with
+/// the root. 499:32 is equivalent for its own reason (see the module docs and
+/// `.cargo/mutants.toml`). The test is kept because the behaviour it pins --
+/// refuse, and name the outside location -- is worth pinning regardless.
 #[test]
 fn pending_remainder_that_canonicalises_outside_the_root_is_refused() {
     let f = Fixture::new("pending-out");
     // A symlink at the root level whose target is an absolute host path
     // with a non-existent final component: dangling AND outside. The hop
-    // lands on an absent location outside the root, which becomes the
-    // walk's `current` with the remainder pending — the path the 499:32
-    // guard must catch.
+    // lands on an absent location outside the root; the per-hop check is
+    // what refuses it here.
     symlink(
         "/nonexistent-mut23-host/dir/absent",
         f.root.join("out-absent"),

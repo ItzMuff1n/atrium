@@ -103,10 +103,51 @@ exclude_globs = ["crates/*/src/main.rs"]
 #   its boundary (N.10: `cap-1`, `cap`, `cap+1`). The mutants at 504:36 and
 #   506:26 -- the `-` and the `n > room` comparison inside that branch -- are in
 #   scope and caught.
+#
+# --- resolver, issue #23 (19 Sep 2026) ---
+#
+# Of the ten mutants #23 listed, eight are now KILLED by tests in
+# crates/resolver/tests/mutants_23.rs, each verified by hand-applying the
+# mutation and watching the named test fail -- not by trusting the tool's
+# verdict. The two below are EQUIVALENT: no input can distinguish them from
+# the real code, which was established by running the real resolver binary with
+# and without the mutation against a generated corpus of ~13,500 virtual paths
+# (identical output on every path) and by reading the data flow, which shows
+# the mutated value is never observed. They are recorded here rather than
+# tested because there is no test to write -- a "test" for them would pass
+# with the mutation applied, which is exactly the false kill this topic exists
+# to eliminate.
+#
+# 499:32 -- `replace match guard canonical.starts_with(canon_root) with true in
+#   walk`. EQUIVALENT. The guarded match is on `existing`, the canonicalised
+#   longest existing prefix of a pending (absent) remainder. `current` -- and
+#   therefore the `out` this prefix is derived from -- is inside `canon_root`
+#   on EVERY path that assigns it: it starts as `canon_root` (line 352), a `..`
+#   step that would leave is refused at 435, a hop position is refused at 825,
+#   and a `canonicalize` at 437 is itself checked with `starts_with`. So the
+#   `Some(canonical)` arm always has `canonical.starts_with(canon_root) == true`
+#   and the guard can never take its false branch. Confirmed by instrumenting
+#   the guard over the corpus: 329 hits, all `true`, none false, none `None`.
+#   The sibling `with false` mutation at the same site IS in scope and IS
+#   caught -- it breaks the every-other case, so this guard's real behaviour
+#   stays tested and only the unreachable direction is skipped.
+#
+# 841:27 -- `delete ! in walk_link_target`. EQUIVALENT. The flipped value is
+#   the THIRD element of the returned tuple, `any_absent`, which flows into
+#   `absent_seen` in `walk` (line 466-468) and is returned (lines 502 and 505).
+#   `absent_seen` is assigned at 406/418/455/467, returned at 502/505, and read
+#   NOWHERE -- `grep -n absent_seen` over the crate shows no other occurrence.
+#   `walk`'s only caller discards it: line 352 is
+#   `walk(...).map(|(p, _absent)| p)`. The value is never observed by anything,
+#   so inverting it cannot change any behaviour. The FIRST element of that
+#   tuple -- `location`, the containment-checked path -- is unaffected by the
+#   mutation and is what the existing tests at 825/836 pin.
 exclude_re = [
     "^crates/shell/src/lib\\.rs:.*: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in run$",
     "^crates/shell/src/lib\\.rs:.*: delete - in run$",
     "^crates/shell/src/lib\\.rs:.*: replace < with <= in read_capped$",
+    "^crates/resolver/src/lib\\.rs:.*: replace match guard canonical\\.starts_with\\(canon_root\\) with true in walk$",
+    "^crates/resolver/src/lib\\.rs:841:27: delete ! in walk_link_target$",
 ]
 
 # The default test timeout is 5x the baseline test time with a minimum of 20
