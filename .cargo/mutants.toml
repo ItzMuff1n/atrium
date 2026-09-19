@@ -146,7 +146,9 @@ exclude_re = [
     "^crates/shell/src/lib\\.rs:.*: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in run$",
     "^crates/shell/src/lib\\.rs:.*: delete - in run$",
     "^crates/shell/src/lib\\.rs:.*: replace < with <= in read_capped$",
+    # resolver #23: guard unreachable -- the false branch cannot be taken.
     "^crates/resolver/src/lib\\.rs:.*: replace match guard canonical\\.starts_with\\(canon_root\\) with true in walk$",
+    # resolver #23: flips a tuple element that is read nowhere in the crate.
     "^crates/resolver/src/lib\\.rs:841:27: delete ! in walk_link_target$",
 ]
 
