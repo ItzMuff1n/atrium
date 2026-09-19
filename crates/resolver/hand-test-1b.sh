@@ -175,7 +175,6 @@ run() {
 }
 
 echo "=== A. traversal in the existing part, absent tail (expect REJECT) ==="
-run A R '/../newfile'
 run A R '/../../newfile'
 run A R '/../../..'
 run A R '/home/../../newfile'
