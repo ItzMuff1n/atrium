@@ -32,8 +32,13 @@ branches — the Lead does all of that.
 (`~/.hermes/cache/delegation/live/<id>/task-N.log`), never from its summary: a
 summary is a self-report.
 
-`exit_reason` of `max_iterations`, or a timeout, counts as **FAILED** — split the
-task smaller and retry. A partial result is not a partial success.
+**Its result is judged by that transcript and by its `exit_reason` — `status`
+alone means nothing.** `status=completed` means the child **stopped**, not that it
+succeeded. `exit_reason` of `max_iterations`, a timeout, or a last call that
+failed on an API error is **FAILED**: split the task smaller and retry, even when
+the summary reads as complete and confident. A child that ran out of room writes
+a fluent summary of half-finished work, and believing it is how unfinished work
+gets merged under a green tick. A partial result is not a partial success.
 
 ## 4. Blind attacks
 

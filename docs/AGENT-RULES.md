@@ -149,6 +149,36 @@ finding to report, not a thing to work around. This rule is the mechanical form 
 the rule above: the branch-and-PR flow is what makes "both checks green for that
 commit" something GitHub enforces rather than something you remember to do.
 
+**Reporting a delegation means reading `exit_reason`, never `status` alone.**
+`status=completed` means the child **stopped** — not that it succeeded. An
+`exit_reason` of `max_iterations`, a timeout, or an API error (a 429, a rate
+limit, any failed call) means **FAILED**, whatever the summary says. A child that
+ran out of room returns a fluent, well-formed summary of half-finished work, and
+that summary is a self-report like any other. Report it as failed, name which of
+the three it was, and **split the task smaller** — do not treat what it produced
+as a result to build on.
+
+**The same applies to your own turn.** If you are cut off, hit an iteration
+limit, or fail on an API error, the next session's first report says so, at the
+top, in those words. An interruption that goes unmentioned reads as a clean
+finish, and whoever picks it up has no way to tell.
+
+**A claim of done names the evidence: the command and its result.** "It
+compiles" is never evidence that it works. Neither is "the tests pass" without
+the run that printed it. Quote the command, quote what it returned. If you did
+not run it, say you did not run it.
+
+**Build in pieces of roughly 200 lines or less, and build after each.** Never
+write a large file in one shot and then debug it — errors a build would have
+caught immediately instead surface one at a time, each fix obscuring the next.
+A file written whole and repaired afterwards costs many turns to reach the state
+that building after every piece reaches in a few.
+
+**Tests and the code they cover go in the same commit.** The pre-commit hook runs
+`scripts/check.sh`, so a commit whose tests do not yet match its code fails and
+is refused. Writing both together is not tidiness — it is what keeps every commit
+in the history green on its own.
+
 ---
 
 ## 7. Code that must be treated as dangerous
