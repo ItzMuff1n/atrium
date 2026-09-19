@@ -152,6 +152,22 @@ def build_prompt(pr: str, diff: str, issues: list[dict]) -> str:
 
 
 def ask_model(prompt: str, model: str, api_url: str, key: str) -> str:
+    """One call to the model, with one retry on a transport failure.
+
+    The timeout and the retry are both here for a measured reason, not caution
+    in the abstract. glm-5.3 is a reasoning model: it emits a `reasoning` field
+    before its answer, so latency is dominated by thinking rather than by prompt
+    size. Measured direct from a workstation on 19 Sep 2026, a 2,007-byte prompt
+    took 19.7s and a 16,596-byte one took 32.5s.
+
+    In CI the same call exceeded 180s and the step failed with "could not reach
+    the model endpoint: The read operation timed out" (run 35409248445, on a
+    1,015-byte diff -- the SMALLEST input it was given). Failing closed was
+    correct, but a check that times out on small inputs and blocks every PR
+    behind `current_user_can_bypass: never` is a check that has to be disabled,
+    so the timeout is 600s and a single transport retry absorbs a transient
+    stall. A timeout is still a failure -- there is no pass-on-error path.
+    """
     body = json.dumps(
         {
             "model": model,
@@ -168,16 +184,32 @@ def ask_model(prompt: str, model: str, api_url: str, key: str) -> str:
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            payload = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")[:500]
-        raise ReviewError(f"the model endpoint returned HTTP {exc.code}: {detail}") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise ReviewError(f"could not reach the model endpoint: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ReviewError(f"the model endpoint did not return JSON: {exc}") from exc
+    last: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                payload = json.loads(resp.read().decode())
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:500]
+            # A 5xx is worth one retry; a 4xx is a request problem that will
+            # fail identically the second time, so it is raised immediately.
+            if exc.code < 500 or attempt == 2:
+                raise ReviewError(
+                    f"the model endpoint returned HTTP {exc.code}: {detail}"
+                ) from exc
+            last = exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            last = exc
+            if attempt == 2:
+                raise ReviewError(f"could not reach the model endpoint: {exc}") from exc
+        except json.JSONDecodeError as exc:
+            raise ReviewError(f"the model endpoint did not return JSON: {exc}") from exc
+    else:
+        # Both attempts failed on a transport error. `last` is set on every path
+        # that reaches here, but the explicit fallback avoids a None leaking into
+        # the message if that ever stops being true.
+        raise ReviewError(f"could not reach the model endpoint: {last}")
     try:
         return payload["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
