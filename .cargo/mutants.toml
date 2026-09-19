@@ -104,6 +104,7 @@ exclude_globs = ["crates/*/src/main.rs"]
 #   506:26 -- the `-` and the `n > room` comparison inside that branch -- are in
 #   scope and caught.
 exclude_re = [
+    "^crates/shell/src/lib\\.rs:.*: replace == with != in run$",
     "^crates/shell/src/lib\\.rs:.*: replace match guard e\\.kind\\(\\) == std::io::ErrorKind::NotFound with true in run$",
     "^crates/shell/src/lib\\.rs:.*: delete - in run$",
     "^crates/shell/src/lib\\.rs:.*: replace < with <= in read_capped$",
