@@ -7,12 +7,15 @@ name: check
 # same thing -- and a commit made with --no-verify is caught here instead of
 # being taken on trust.
 #
-# `test-guard` runs on pull requests only. It exists because `check` answers
+# `guard` runs on pull requests only. It exists because `check` answers
 # "do the tests pass?", which a change can also make true by deleting or
-# weakening the tests instead of fixing the code. `test-guard` compares the PR
+# weakening the tests instead of fixing the code. `guard` compares the PR
 # against its base branch and refuses a pull request that declares fewer tests,
-# that removes or changes an assertion, or that adds #[ignore]. See
-# scripts/test-guard.sh for what it does and does not catch.
+# that removes or changes an assertion, that adds #[ignore], or that weakens
+# one of the gates that catch the agent: the hand-test scripts, the fuzz
+# oracle, the mutation exclusions, the workflows, and the check script and
+# guard themselves. See scripts/guard.sh for what it does and does not catch,
+# and for the single GUARD-OVERRIDE escape hatch.
 
 on:
   push:
@@ -99,7 +102,7 @@ jobs:
       - name: Run the check
         run: bash scripts/check.sh
 
-  test-guard:
+  guard:
     name: test-guard
     runs-on: ubuntu-latest
     # Only a pull request has a base branch to compare against, so this job is
@@ -145,5 +148,5 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Run the test guard
-        run: bash scripts/test-guard.sh
+      - name: Run the guard
+        run: bash scripts/guard.sh
