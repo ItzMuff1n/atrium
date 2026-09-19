@@ -38,7 +38,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-# The label every issue this script files carries. Per docs/QUEUE.md the whole
+# The label every issue this script files carries. Per docs/TOPICS.md the whole
 # report family shares one label, so a run can find what previous runs filed.
 REPORT_LABEL = "fuzz-report"
 
@@ -239,7 +239,7 @@ def existing_issue(title):
     """Number of an open `fuzz-report` issue with exactly this title, or None.
 
     Deduplication stays keyed on the title (the panic message is the identity of
-    a bug class); the LABEL here is the report family, per docs/QUEUE.md, so a
+    a bug class); the LABEL here is the report family, per docs/TOPICS.md, so a
     later run of the workflow can find what earlier runs filed without the label
     having to stand in for the identity. Creating and looking up must use the
     same labels, or a crash filed by one run cannot be found by the next and
