@@ -1193,3 +1193,8 @@ fn m5_stderr_is_collected_even_when_stdout_finishes_first() {
     assert_eq!(o.status, ExitStatus::Exited(0));
     cleanup(&root, &outside);
 }
+
+#[test]
+fn guard_probe_ordinary_test_addition() {
+    assert_eq!(1 + 1, 2);
+}
