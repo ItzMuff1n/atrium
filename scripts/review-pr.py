@@ -13,9 +13,20 @@ copy in a shell step.
 
 Exit code discipline (the lesson from PR #15 and #19, where a lost report
 passed as a green step): this exits non-zero whenever the review could not be
-completed, as well as when the review says fail. "I could not review this" and
-"this passed review" are different statements, and only one of them is safe to
-make without evidence.
+completed, because "I could not review this" must never render as a pass. A
+missing secret, an unparseable answer, a self-contradicting answer and an
+oversized diff are all non-zero for that reason.
+
+The verdict itself is ADVISORY and exits 0, pass or fail. The reason is
+measured, not stylistic: on 19 Sep 2026 the same byte-identical diff was
+reviewed twice at temperature 0 and got opposite verdicts (see the header of
+.github/workflows/review.yml for the run ids and the file hash). A required
+check that answers differently on identical input is a deadlock, so the verdict
+is reported and the deterministic scripts are left to block.
+
+The verdict is printed on a single machine-readable line, `review: verdict=...`,
+so the workflow can distinguish "reviewed and failed" from "could not review"
+without parsing prose.
 
 Deliberately NOT a failure: a dependabot PR. It is skipped, which is recorded
 in a comment so the absence of a review is visible rather than silent.
@@ -375,14 +386,16 @@ def main() -> int:
         body = (
             f"**AI review: pass.**\n\n"
             f"Reviewed by `{args.model}` at temperature 0, over a "
-            f"{len(issues)}-issue scope and a {size}-byte diff. No findings."
+            f"{len(issues)}-issue scope and a {size}-byte diff. No findings.\n\n"
+            f"<!-- Advisory check: this passes or fails the job, it does not block a "
+            f"merge. See .github/workflows/review.yml. -->"
         )
         try:
             comment(args.pr, body)
         except ReviewError as exc:
             print(f"review: FAILED to comment the pass: {exc}")
             return 1
-        print("review: PASS")
+        print("review: verdict=pass")
         return 0
 
     lines = "\n".join(f"- {f}" for f in findings)
@@ -391,16 +404,19 @@ def main() -> int:
         f"Reviewed by `{args.model}` at temperature 0, over a "
         f"{len(issues)}-issue scope and a {size}-byte diff.\n\n"
         f"## Findings\n\n{lines}\n\n"
-        f"<!-- This check fails until the findings are addressed or rebutted. "
-        f"A rebuttal belongs in a reply to this comment, not in a re-run. -->"
+        f"<!-- Advisory check: this does NOT block the merge. A finding is a claim "
+        f"to be argued with in a reply to this comment, not re-run away. See "
+        f".github/workflows/review.yml for why it is advisory. -->"
     )
     try:
         comment(args.pr, body)
     except ReviewError as exc:
         print(f"review: FAILED to comment the findings: {exc}")
         return 1
-    print(f"review: FAIL -- {len(findings)} finding(s)")
-    return 1
+    # ADVISORY: a fail verdict is reported, not enforced. Exit 0 deliberately --
+    # see this file's module docstring for the measurement behind that.
+    print(f"review: verdict=fail findings={len(findings)}")
+    return 0
 
 
 if __name__ == "__main__":
