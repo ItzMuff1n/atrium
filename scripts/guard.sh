@@ -746,14 +746,39 @@ else
     fi
     git diff -U0 "$MB" "$HEAD_SHA" -- "$f" >/tmp/guard-wf.diff 2>&1 || true
 
-    # (1) A step deleted: compare the multiset of `- name:` values.
-    base_steps="$(git show "${MB}:$f" | grep -oE '^[[:space:]]*- name:.*' | sed 's/^[[:space:]]*- name:[[:space:]]*//' | sort)"
-    head_steps="$(git show "${HEAD_SHA}:$f" | grep -oE '^[[:space:]]*- name:.*' | sed 's/^[[:space:]]*- name:[[:space:]]*//' | sort)"
-    removed_steps="$(comm -23 <(printf '%s\n' "$base_steps" | grep . | uniq -c | sed 's/^ *//') \
-                              <(printf '%s\n' "$head_steps" | grep . | uniq -c | sed 's/^ *//') || true)"
-    # A plain set difference is friendlier to read than a count difference.
-    removed_names="$(comm -23 <(printf '%s\n' "$base_steps" | sort -u) \
-                              <(printf '%s\n' "$head_steps" | sort -u) || true)"
+    # (1) A step deleted.
+    #
+    # Detected by the COMMANDS, not the labels. A step whose `- name:` was
+    # reworded while its `run:`/`uses:` stayed the same is a rename, not a
+    # deletion, and must not fire -- that was the first false positive this
+    # script produced, on its own commit. What matters is whether the work the
+    # step did is still being done.
+    #
+    # So: collect the set of `uses:` values and `run:` commands. A command that
+    # existed at base and is gone at head means a step was removed (or its
+    # command was swapped for something else, which is the same risk).
+    #
+    # A block `run: |` has no command on its own line, so the first non-blank,
+    # non-comment line of the block is taken as its identity.
+    wf_commands() {
+      git show "$1:$2" 2>/dev/null | awk '
+        /^[[:space:]]*-[[:space:]]*uses:[[:space:]]*/ {
+          v=$0; sub(/^[[:space:]]*-[[:space:]]*uses:[[:space:]]*/,"",v); print "uses:" v; next }
+        /^[[:space:]]*uses:[[:space:]]*/ {
+          v=$0; sub(/^[[:space:]]*uses:[[:space:]]*/,"",v); print "uses:" v; next }
+        /^[[:space:]]*run:[[:space:]]*[^|>[:space:]]/ {
+          v=$0; sub(/^[[:space:]]*run:[[:space:]]*/,"",v); print "run:" v; next }
+        /^[[:space:]]*run:[[:space:]]*[|>][-+]?[[:space:]]*$/ { inblock=1; next }
+        inblock==1 {
+          if ($0 ~ /^[[:space:]]*$/) next
+          if ($0 ~ /^[[:space:]]*#/) next
+          v=$0; sub(/^[[:space:]]*/,"",v); print "run:" v; inblock=0; next }
+      ' | sort -u
+    }
+    base_cmds="$(wf_commands "$MB" "$f")"
+    head_cmds="$(wf_commands "$HEAD_SHA" "$f")"
+    removed_names="$(comm -23 <(printf '%s\n' "$base_cmds" | grep .) \
+                              <(printf '%s\n' "$head_cmds" | grep .) || true)"
 
     # (2) An added continue-on-error, always-true guard, or swallowed failure.
     added_swallow="$(grep -E '^\+[^+]' /tmp/guard-wf.diff \
@@ -813,7 +838,7 @@ $(printf '%s' "$loosened" | sed 's/^/    /')"
         sum '```'
       fi
     else
-      say "guard: (d) OK -- $f: steps $(printf '%s\n' "$head_steps" | grep -c . || true) at head, none deleted, no swallow added, no timeout/retry loosened."
+      say "guard: (d) OK -- $f: no command deleted, no swallow added, no timeout/retry loosened."
       sum ""
       sum "- \`$f\`: no step deleted, no failure-swallowing line added, no timeout or retry loosened."
     fi
