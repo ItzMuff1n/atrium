@@ -618,6 +618,88 @@ Removed from config Sep 2026. Full evidence in `pipeline-check.md` §5.
 
 ## Agent-reported, unverified
 
+### Issue #40 — the flaky shell test was a fixture bug, not the resolver (20 Sep 2026, Hermes session)
+
+**Observed.** `a1_pwd_is_the_resolved_directory` failed CI at
+`crates/shell/tests/shell_tests.rs:35:68` with `Os { code: 17, kind: AlreadyExists }`.
+Root cause found and reproduced: `unique()`, which builds each test's throwaway
+directory name, returned
+
+```rust
+N.fetch_add(1, Ordering::SeqCst) + SystemTime::now()...as_nanos() as u64
+```
+
+That sum is not injective. The counter is bumped *before* the clock is read, so a
+thread preempted between the two carries a **later clock reading with its earlier
+counter value**, and the two differences cancel exactly. Two calls then return the
+same number; two tests share one directory; the first creates `trap/escape` as a
+symlink; the second's `symlink()` fails `EEXIST`. Recorded by a throwaway harness:
+
+```
+N=11400632  t=1789839609075653548
+N=11428994  t=1789839609075625186   -> dN=-28362  dt=+28362
+```
+
+**Measured on the real CI binary, before the fix** (48 `make_root()` calls per run):
+
+| runs | CPUs | threads | failures at 35:68 |
+|---|---|---|---|
+| 240 | all 28 | 28 | 0 |
+| 120 | 4 | 2 | 1 |
+| 400 | 4 | 28 | 1 |
+
+**2 in ~1,340 runs, and only when confined to 4 CPUs.** An idle machine hides it;
+contention widens the window. Victims were `a2` and `a5` as well as `a1` — the
+winner of the race is arbitrary. The fixture at the failing commit `4ebdcecb` is
+byte-identical to `main`'s except one unrelated line.
+
+**Excluded, with evidence, the other three candidates.** Not an ordering
+dependency (reproduced at 2 and 28 threads, different victims); not cwd/env/fixture
+*state* leaking (`run()` sets the child environment explicitly at
+`crates/shell/src/lib.rs:328`; no test changes the process cwd; the issue's own
+candidate — a failing `remove_dir_all` — was never observed to fail); not an
+always-wrong assertion (line 35 is not an assertion, and the panic precedes `a1`'s
+own).
+
+**Fix applied.** `unique()` is now the counter alone — unique by construction for the
+process's lifetime, which is the only scope needed. PR #58, merged as `c4b1cc1`.
+Collision rate per 48-call burst, detector's failure path demonstrated first
+(injected constant → P=1.0):
+
+| variant | P(collision) |
+|---|---|
+| old `counter + nanos` | 1.13e-2 (227/20,000) |
+| `counter<<20 ^ rotated_nanos` | 1.33e-2 — tried, no better, rejected |
+| counter only (shipped) | **0 / 200,000 trials (9.6M calls)** |
+
+**Recycled pids do not collide**, so no nonce was added. A recycled pid restarts the
+counter at 0 and requests the same tag sequence, but lines 26–27 sweep both paths at
+that exact tag before line 35 creates the symlink. Verified: intact corpse 20,000
+trials → 0; **dangling** corpse 5,000 trials → sweep never failed, 0; sweep removed
+as the failure path → 5,000/5,000 EEXIST, proving the sweep is what prevents it.
+
+**Verified after the change:** `bash scripts/check.sh` → `all checks passed`
+(and again in the pre-commit hook); 400 real runs at 4 CPUs / 28 threads → 0 failures,
+0 collisions at 35:68; guard `GUARD_BASE=HEAD~1` → PASS. No retry, sleep, `#[ignore]`,
+serial pin or loosened assertion.
+
+**Not done.** Two follow-ups filed rather than bundled: **#59** — a failed fixture
+sweep is invisible (`let _ =` discards every `remove_dir_all` error) and a panicking
+test leaves its tree behind; **#60** — fixtures accumulate in `/tmp` and are never
+collected (27,512 dirs from 775 pids, all complete; reproduced by killing the binary
+mid-run). The leftovers are load-bearing: they are the population the sweep must
+clear, which is why the discarded error matters. The 1-CPU starvation panics seen in
+my own hostile harness are that harness, not the resolver, and are excluded.
+
+**Uncertain.** The CI-side failure rate is not measurable from the data — the issue
+holds the only instance. 1-in-670 is the local figure on the same binary. Which two
+call sites collided in a real run is inference: the loser's tag is never recorded,
+because the winning test deletes the shared directory. I also deleted the original
+27,512 leftover directories before inspecting them and rebuilt the mechanism instead
+— evidence lost, stated plainly.
+
+Full report: `/home/muffin/VibeCodeProjects/atrium-topic40-report.md`.
+
 ### Phase 1b REOPENED by the resolver's own property test, fixed, and awaiting Muffin's hand re-test (18 Sep 2026, Hermes session)
 
 **CLOSED 18 Sep 2026 by Muffin's own run.** The gate was re-run and passed; the
