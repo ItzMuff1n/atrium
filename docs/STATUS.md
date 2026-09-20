@@ -705,13 +705,16 @@ failure would be invisible. Full tables in the 20 Sep addendum to
 0 collisions at 35:68; guard `GUARD_BASE=HEAD~1` → PASS. No retry, sleep, `#[ignore]`,
 serial pin or loosened assertion.
 
-**Not done.** Two follow-ups filed rather than bundled: **#59** — a failed fixture
+**Not done.** Three follow-ups filed rather than bundled: **#59** — a failed fixture
 sweep is invisible (`let _ =` discards every `remove_dir_all` error) and a panicking
 test leaves its tree behind; **#60** — fixtures accumulate in `/tmp` and are never
 collected (27,512 dirs from 775 pids, all complete; reproduced by killing the binary
 mid-run). The leftovers are load-bearing: they are the population the sweep must
-clear, which is why the discarded error matters. The 1-CPU starvation panics seen in
-my own hostile harness are that harness, not the resolver, and are excluded.
+clear, which is why the discarded error matters. **#62** — filed 20 Sep 2026, a
+*different* flake in the same file: `n14_to_n16…` fails `ETXTBSY` (os error 26) at
+`979:75` when another thread's `fork()` inherits a concurrently-open write fd; ~1 in
+320 runs, pre-existing, mechanism measured with controls. The 1-CPU starvation panics
+seen in my own hostile harness are that harness, not the resolver, and are excluded.
 
 **Uncertain.** The CI-side failure rate is not measurable from the data — the issue
 holds the only instance. 1-in-670 is the local figure on the same binary. Which two
