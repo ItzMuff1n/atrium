@@ -672,11 +672,33 @@ Collision rate per 48-call burst, detector's failure path demonstrated first
 | `counter<<20 ^ rotated_nanos` | 1.33e-2 — tried, no better, rejected |
 | counter only (shipped) | **0 / 200,000 trials (9.6M calls)** |
 
-**Recycled pids do not collide**, so no nonce was added. A recycled pid restarts the
-counter at 0 and requests the same tag sequence, but lines 26–27 sweep both paths at
-that exact tag before line 35 creates the symlink. Verified: intact corpse 20,000
-trials → 0; **dangling** corpse 5,000 trials → sweep never failed, 0; sweep removed
-as the failure path → 5,000/5,000 EEXIST, proving the sweep is what prevents it.
+**Recycled pids do not collide**, so no nonce was added — but the reason is **not**
+a property of the tag format, and the earlier wording above is corrected here. The
+tags *do* repeat across a recycled pid: it restarts the counter at 0 and asks for the
+same `{pid}-0, {pid}-1, …` sequence. What prevents the collision is that lines 26–27
+sweep both paths at that exact tag **before** line 35 creates the symlink. Verified:
+intact corpse 20,000 trials → 0; **dangling** corpse 5,000 trials → sweep never
+failed, 0; sweep removed as the failure path → 5,000/5,000 EEXIST, proving the sweep
+is what prevents it.
+
+**The sweep's protection has a named edge, found 20 Sep 2026.** Because the guarantee
+rests on the sweep *succeeding*, it was attacked with nine leftover shapes. Five shapes
+the sweep clears without trouble; a mode-000 subdirectory **inside `trap/`** is the one
+shape that forces the collision — `remove_dir_all` aborts the walk on it, leaves
+`escape` in place, and line 35 then fails `EEXIST` (**400/400 trials, reproduced; the
+same shape with the sweep removed also 400/400, so the detector fires**). Modes 000 and
+555 on the root leave `escape` behind too but fail as `EACCES` at line 29 or 35 — a
+different class, not #40.
+
+**That shape is unreachable from this fixture.** Nothing is ever written under `trap/`
+except `escape` itself, and the only mode change in `shell_tests.rs` is `0o644` on
+`home/work/notexec.txt` (line 920). So the leftover a dead process leaves is always one
+the sweep can clear, and no nonce is warranted. **The safety currently rests on `trap/`
+containing only `escape`** — a future test that writes anything else there, or changes a
+mode in that subtree, re-opens the exact #40 signature at line 35. Recorded as a latent
+trap, and it belongs with #59/#60, since the sweep's errors are discarded and such a
+failure would be invisible. Full tables in the 20 Sep addendum to
+`/home/muffin/VibeCodeProjects/atrium-topic40-report.md`.
 
 **Verified after the change:** `bash scripts/check.sh` → `all checks passed`
 (and again in the pre-commit hook); 400 real runs at 4 CPUs / 28 threads → 0 failures,
