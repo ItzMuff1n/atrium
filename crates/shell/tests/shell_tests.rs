@@ -40,14 +40,23 @@ fn make_root() -> (PathBuf, PathBuf, String) {
     (root, outside, tag)
 }
 
+/// A process-wide counter. The tag also carries the pid, so
+/// `atrium-2b-test-{pid}-{n}` is unique for the life of the process — which is
+/// the only scope required. A recycled pid does NOT collide with an older run's
+/// leftover: lines 26-27 above sweep both paths at that exact tag before line 35
+/// ever creates the symlink.
+///
+/// This used to be `counter + SystemTime::now().as_nanos()`. That sum is not
+/// injective: the counter is bumped before the clock is read, so a thread
+/// preempted between the two carries a later clock reading with its earlier
+/// counter value, and the two differences cancel. Two calls then return the same
+/// number. Measured on this suite: ~1% per run, which is how two tests came to
+/// share one fixture directory and the second's `symlink()` failed EEXIST —
+/// issue #40.
 fn unique() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     N.fetch_add(1, Ordering::SeqCst)
-        + std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64
 }
 
 fn cleanup(root: &Path, outside: &Path) {
