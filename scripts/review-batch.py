@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -291,8 +292,10 @@ def parse_findings(content: str) -> list[dict]:
     if not isinstance(findings, list):
         raise ReviewError(f"the model's JSON had no 'findings' list: {text[:400]!r}")
     out = []
+    malformed = []
     for item in findings:
         if not isinstance(item, dict):
+            malformed.append(item)
             continue
         out.append(
             {
@@ -300,6 +303,19 @@ def parse_findings(content: str) -> list[dict]:
                 "line": item.get("line"),
                 "why": str(item.get("why") or "").strip(),
             }
+        )
+    # A findings list that contained entries the parser could not read is NOT
+    # the same as a list of findings that were all read. Dropping them silently
+    # would let a malformed answer print "No suspected logic issues were
+    # reported" and exit 0 -- a broken answer rendering as a clean pass, the
+    # exact outcome this parser's docstring says must be an error. Raised, not
+    # warned, because there is no way for the caller to distinguish the two
+    # once the entries are gone.
+    if malformed:
+        raise ReviewError(
+            f"the model's 'findings' list held {len(malformed)} entr"
+            f"{'y' if len(malformed) == 1 else 'ies'} that are not objects, so "
+            f"they could not be read: {str(malformed)[:200]!r}"
         )
     return out
 
@@ -401,6 +417,42 @@ def run_selftest() -> int:
         except ReviewError:
             check(f"{label} refused", True)
 
+    # Round-2 findings, from the second batch review.
+    # Finding 5: entries in the findings list that are not objects must not be
+    # dropped silently -- that would let a malformed answer render as clean.
+    print("\n5. unreadable entries inside the findings list are refused")
+    for bad_text, label in [
+        ('{"findings": ["just a string"]}', "findings holds strings"),
+        ('{"findings": [{"file":"a.rs"}, 42]}', "one object, one number"),
+    ]:
+        try:
+            parse_findings(bad_text)
+            check(f"{label} was silently accepted", False)
+        except ReviewError:
+            check(f"{label} refused", True)
+    # Finding 6: an unexpected non-ReviewError must still print the marker
+    # line, or a caller cannot tell "review failed" from "script broke".
+    print("\n6. an unexpected error still prints the marker, not a traceback")
+    src = Path(__file__).read_text()
+    has_boundary = "except Exception as exc:" in src and "unexpected " in src
+    check("main() has a catch-all that prints the marker line", has_boundary)
+
+    # Finding 7: a split review must cover DELETED files too. The split loop
+    # used to iterate only files still on disk, so deletions were never sent.
+    #
+    # The first version of this check asserted `"for path in files:" in src`,
+    # which was ALREADY true on the pre-fix file -- build_prompt() has its own
+    # `for path in files:` at line 266. It matched the wrong loop and reported
+    # a green. A substring check is not enough here; the assertion has to name
+    # the split loop itself.
+    print("\n7. a split review covers deleted files' hunks, not just live ones")
+    split_loop = re.search(r"for path in (\w+):\s*\n\s*d = branch_diff", src)
+    split_target = split_loop.group(1) if split_loop else None
+    check(
+        f"the split loop iterates every changed file (found: {split_target!r})",
+        split_target == "files",
+    )
+
     print()
     print(f"selftest: {checks - len(failures)} ok, {len(failures)} failed")
     return 1 if failures else 0
@@ -447,8 +499,15 @@ def main() -> int:
                 f"{MAX_PROMPT_BYTES} bytes, so this call covers ONE file only. "
                 f"Report findings in this file only."
             )
-            for path in touched:
+            # Split over EVERY changed file, not only the ones still on disk.
+            # A deleted file has no text to paste, but its DELETION is part of
+            # the change and its hunks belong in a chunk. Iterating `touched`
+            # here dropped every deleted file from a split review entirely,
+            # while the output still claimed the split covered the branch.
+            for path in files:
                 d = branch_diff(args.base, path)
+                if not d.strip():
+                    continue
                 prompt = build_prompt(d, [path], issue, note)
                 # Re-measured AFTER building, and announced when it is still
                 # over budget. The whole-branch check above cannot see this: a
@@ -501,6 +560,21 @@ def main() -> int:
         return 0
     except ReviewError as exc:
         print(f"review-batch: could-not-review: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        # Catch-all at the boundary, deliberately. git(), gh_repo() and
+        # issue_body() call subprocess.run unguarded, and a missing `gh` or
+        # `git` binary, a non-UTF-8 diff, or any other unexpected fault raises
+        # something that is not ReviewError. Unhandled, that dies with a
+        # traceback: exit 1 (the interpreter's own) but NO marker line, so a
+        # caller reading stdout cannot tell "the review failed" from "the
+        # script is broken". Same bug class as findings 1 and the ask_model
+        # translation -- the marker is the contract, not the exit code.
+        print(
+            f"review-batch: could-not-review: unexpected "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
         return 1
 
 
