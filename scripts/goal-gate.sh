@@ -50,9 +50,26 @@ MILESTONE=""
 REPO=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) REPO="${2:-}"; shift 2 ;;
+    --repo)
+      # Guard the argument count BEFORE shifting. With `--repo` as the last
+      # argument, `shift 2` fails ("shift count out of range"), $# stays at 1,
+      # and this loop spins forever -- the gate HANGS instead of exiting.
+      # Confirmed: `goal-gate.sh <milestone> --repo` ran past an 8s timeout
+      # (exit 124). Found by the batch review.
+      if [ $# -lt 2 ]; then
+        echo "goal-gate: --repo needs a value (OWNER/NAME)" >&2
+        usage
+        exit 3
+      fi
+      REPO="$2"; shift 2 ;;
     -h|--help) usage; exit 3 ;;
-    *) MILESTONE="$1"; shift ;;
+    *)
+      if [ -n "$MILESTONE" ]; then
+        echo "goal-gate: unexpected extra argument '$1'" >&2
+        usage
+        exit 3
+      fi
+      MILESTONE="$1"; shift ;;
   esac
 done
 
@@ -139,6 +156,27 @@ fi
 get() { printf '%s\n' "$verdict" | sed -n "s/^$1=//p" | head -1; }
 n_closing="$(get closing)"
 n_unparked="$(get open_unparked)"
+
+# Does the milestone exist at all? A misspelled or renamed milestone makes
+# every count zero, which reads exactly like "nothing to worry about" and
+# exits 0 -- the gate silently switched off, which is the dangerous direction
+# for a thing that is supposed to catch a premature finish. The header already
+# documents exit 3 for "missing/unknown milestone"; this makes the code match
+# that contract. Found by the batch review.
+if ! gh api "repos/$REPO/milestones?state=all&per_page=100" \
+        --jq '.[].title' 2>/dev/null | grep -Fxq "$MILESTONE"; then
+  # Distinguish "the API call failed" from "the milestone really is absent":
+  # the first is an inability to determine state (warn + 0, per the header),
+  # the second is a caller error (3).
+  if ! gh api "repos/$REPO/milestones?state=all&per_page=100" \
+        --jq '.[].title' >/dev/null 2>&1; then
+    warn "could not list milestones for $REPO. Exiting 0."
+    exit 0
+  fi
+  echo "goal-gate: no milestone titled \"$MILESTONE\" in $REPO." >&2
+  echo "goal-gate: a misspelled milestone would make every count zero and read as all-clear, so this is exit 3." >&2
+  exit 3
+fi
 
 printf 'goal-gate: milestone "%s" -- open issues: %s (%s unparked, %s parked); closing issue present: %s\n' \
   "$MILESTONE" "$(get open_in_ms)" "$n_unparked" "$(get parked)" \
