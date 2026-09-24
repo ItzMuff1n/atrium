@@ -167,3 +167,49 @@ maximum** — detail goes in the issue.
 
 Act on Muffin's report. Record sign-offs in `docs/STATUS.md` — **his move, never
 ours**. Then close the milestone and the plan issue.
+
+## 11. Running a topic as a `/goal`
+
+A topic can be run as a Hermes **`/goal`**, so the loop keeps working across
+turns without Muffin re-prompting. Two things about that are worth writing down.
+
+**The goal text.** Set it with `/goal`, naming the topic and the plan issue, and
+say explicitly that the plan issue is re-read at the start of every task:
+
+```
+/goal Run topic #<n> (<name>) to completion per docs/TOPICS.md, re-reading
+issue #<n> at the start of every task.
+```
+
+**The quality gate.** Hermes runs a goal's quality gates at **every turn
+boundary**, and auto-pauses the goal after **3 consecutive failures**. So the gate
+must NOT fail merely because the topic is unfinished — unfinished is the normal
+state for the entire run. Add it once with:
+
+```
+/goal gate add "bash scripts/goal-gate.sh '<milestone name>'"
+```
+
+`scripts/goal-gate.sh <milestone>` is read-only, uses `gh` only, runs in
+seconds, and works from any checkout. It fails for exactly two reasons:
+
+| exit | meaning |
+|---|---|
+| **0** | all clear — including "the topic is simply not finished yet" |
+| **1** | **premature finish**: the `Your turn: <topic>` closing issue is open while the milestone still has open issues not labelled `parked` |
+| **2** | **`main` is red**: the required `check` workflow failed on main's current commit |
+| **3** | bad usage (missing/unknown milestone) |
+
+The closing issue itself is excluded from the "still open" count: it is open by
+definition while the gate is asking the question, so counting it would make
+"everything else is parked" unsatisfiable.
+
+Parking (§6) is what makes exit 1 mechanical: the label is the difference between
+"still being worked" and "deliberately not", and a topic whose only remaining work
+is parked IS finished, because the closing issue lists it.
+
+**If the gate cannot determine state** — `gh` not installed, not authenticated, no
+network — it exits 0 with a loud `goal-gate: WARNING:` on both stdout and stderr.
+That is deliberate: a transient hiccup should not pause a long run. It is the
+same shape as a silent pass, so the warning is unmissable and this paragraph is
+the reason it is allowed.
