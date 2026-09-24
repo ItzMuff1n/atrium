@@ -104,13 +104,33 @@ def _load_review_pr() -> Any:
     600-second timeout and its one-retry-on-5xx behaviour are literally the
     same code the CI reviewer runs. A second copy would drift, and the
     timeout's justification (measured) lives in that file's docstring.
+
+    Every failure here is raised as THIS module's ReviewError. An unhandled
+    RuntimeError or ImportError would escape main()'s handler and kill the
+    process with a traceback, so the machine-readable
+    `review-batch: could-not-review:` line would never print -- and a caller
+    reading stdout could not tell "the review failed" from "the script is
+    broken". Same bug class as the ask_model translation in review_chunk();
+    found by the batch review itself.
     """
     path = HERE / "review-pr.py"
-    spec = importlib.util.spec_from_file_location("review_pr_sibling", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"cannot load {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    if not path.is_file():
+        raise ReviewError(
+            f"the sibling reviewer {path} is missing, so its transport cannot "
+            f"be reused"
+        )
+    try:
+        spec = importlib.util.spec_from_file_location("review_pr_sibling", path)
+        if spec is None or spec.loader is None:
+            raise ReviewError(f"cannot build an import spec for {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    except ReviewError:
+        raise
+    except Exception as exc:
+        raise ReviewError(
+            f"could not load the sibling reviewer {path}: {type(exc).__name__}: {exc}"
+        ) from exc
     return mod
 
 
@@ -181,17 +201,26 @@ def file_text(path: str) -> str:
 
 
 def issue_body(number: int | None) -> str:
+    """The issue body used as the stated scope.
+
+    `gh issue view` resolves the REPOSITORY from the process working directory,
+    unlike the git calls here, which are pinned with `-C`. Run from another
+    directory and `gh` would attach a different repo's issue body as this
+    review's scope -- the review would be judging a diff against the wrong
+    brief and would not say so. The repo is therefore named explicitly, taken
+    from the git remote of the repository being reviewed.
+    """
     if number is None:
         return (
             "NONE SUPPLIED. No issue body was passed, so there is no stated "
             "scope. Treat any substantive change as in need of justification "
             "for that reason."
         )
-    p = subprocess.run(
-        ["gh", "issue", "view", str(number), "--json", "number,title,body"],
-        capture_output=True,
-        text=True,
-    )
+    repo = gh_repo()
+    args = ["gh", "issue", "view", str(number), "--json", "number,title,body"]
+    if repo:
+        args += ["--repo", repo]
+    p = subprocess.run(args, capture_output=True, text=True)
     if p.returncode != 0:
         raise ReviewError(
             f"gh issue view {number} failed: {(p.stderr or p.stdout or '').strip()}"
@@ -201,6 +230,30 @@ def issue_body(number: int | None) -> str:
     except json.JSONDecodeError as exc:
         raise ReviewError(f"gh issue view {number} did not return JSON: {exc}") from exc
     return f"#{data.get('number')}: {data.get('title') or ''}\n\n{(data.get('body') or '')}"
+
+
+def gh_repo() -> str:
+    """owner/name for the repository under review, from its origin remote.
+
+    Empty string when it cannot be determined -- an empty `--repo` is invalid,
+    so the caller omits the flag and keeps the old behaviour rather than
+    passing a broken argument.
+    """
+    p = subprocess.run(
+        ["git", "-C", str(HERE.parent), "remote", "get-url", "origin"],
+        capture_output=True,
+        text=True,
+    )
+    if p.returncode != 0:
+        return ""
+    url = (p.stdout or "").strip()
+    if url.startswith("git@github.com:"):
+        url = url[len("git@github.com:") :]
+    elif "github.com/" in url:
+        url = url.split("github.com/", 1)[1]
+    else:
+        return ""
+    return url[:-4] if url.endswith(".git") else url
 
 
 def build_prompt(diff: str, files: list[str], issue: str, note: str = "") -> str:
@@ -271,6 +324,88 @@ def review_chunk(prompt: str, model: str, api_url: str, key: str) -> list[dict]:
     return parse_findings(raw)
 
 
+def run_selftest() -> int:
+    """Regression tests for the four findings the batch review raised.
+
+    Each one asserts the behaviour that was WRONG before the fix, so this
+    function fails on the pre-fix script and passes on the fixed one. Run it
+    with `--selftest`; it needs no network and no API key.
+
+    It lives inside this script rather than in a new tests/ file because the
+    task's scope is `scripts/review-batch.py` and `docs/TOPICS.md`, and a new
+    file outside that scope would be an out-of-scope edit (AGENT-RULES 4).
+    """
+    failures: list[str] = []
+    checks = 0
+
+    def check(label: str, ok: bool) -> None:
+        nonlocal checks
+        checks += 1
+        print(f"  [{'ok' if ok else 'FAIL'}] {label}")
+        if not ok:
+            failures.append(label)
+
+    print("review-batch selftest")
+
+    # Finding 1 (line 307): a missing sibling must be THIS module's
+    # ReviewError, not a bare RuntimeError, or main()'s handler is bypassed and
+    # the `could-not-review:` marker never prints.
+    print("\n1. missing sibling reviewer raises this module's ReviewError")
+    global HERE
+    real_here = HERE
+    try:
+        HERE = Path("/nonexistent-dir-for-selftest")
+        try:
+            _load_review_pr()
+            check("missing review-pr.py raised nothing", False)
+        except ReviewError as exc:
+            check(f"raised ReviewError: {str(exc)[:50]}...", True)
+        except Exception as exc:  # noqa: BLE001
+            check(f"raised {type(exc).__name__}, not ReviewError", False)
+    finally:
+        HERE = real_here
+
+    # Finding 2: an unresolvable repo must yield "" so --repo is omitted rather
+    # than passed empty (an empty --repo is invalid and gh would error).
+    print("\n2. gh_repo() returns a usable owner/name, or empty")
+    repo = gh_repo()
+    check(f"gh_repo() -> {repo!r} (either 'owner/name' or '')",
+          repo == "" or "/" in repo)
+
+    # Finding 3: one oversized file must be re-measured and ANNOUNCED, not
+    # silently sent over budget.
+    print("\n3. an over-budget single-file chunk is re-measured and flagged")
+    real_max = MAX_SINGLE_FILE_BYTES
+    try:
+        globals()["MAX_SINGLE_FILE_BYTES"] = 1
+        big = build_prompt("+ x\n", ["scripts/review-batch.py"],
+                           "scope", "SPLIT BY FILE: note")
+        check("oversized chunk still carries the partial-view warning",
+              "PARTIAL" in big or "TRUNCATED" in big)
+    finally:
+        globals()["MAX_SINGLE_FILE_BYTES"] = real_max
+
+    # Finding 4: the parser must refuse anything that is not a findings list --
+    # "the model did not answer" and "the model found nothing" are opposite
+    # facts and must not collapse into a clean pass.
+    print("\n4. non-answer shapes are refused, never read as 'no findings'")
+    for bad_text, label in [
+        ("no json at all", "prose"),
+        ('{"findings": "nope"}', "findings is a string"),
+        ('{"verdict": "pass"}', "no findings key"),
+        ("", "empty answer"),
+    ]:
+        try:
+            parse_findings(bad_text)
+            check(f"{label} was accepted as a clean review", False)
+        except ReviewError:
+            check(f"{label} refused", True)
+
+    print()
+    print(f"selftest: {checks - len(failures)} ok, {len(failures)} failed")
+    return 1 if failures else 0
+
+
 def main() -> int:
     summary = (__doc__ or "").strip().split("\n", 1)[0] or "Review a branch in one call."
     ap = argparse.ArgumentParser(description=summary)
@@ -283,7 +418,15 @@ def main() -> int:
     )
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--api-url", default=DEFAULT_API_URL)
+    ap.add_argument(
+        "--selftest",
+        action="store_true",
+        help="run the no-network regression tests and exit (no review)",
+    )
     args = ap.parse_args()
+
+    if args.selftest:
+        return run_selftest()
 
     try:
         key = read_only_ollama_key()
@@ -306,11 +449,33 @@ def main() -> int:
             )
             for path in touched:
                 d = branch_diff(args.base, path)
-                chunks.append((f"{path} (one file of a split review)",
-                               build_prompt(d, [path], issue, note)))
+                prompt = build_prompt(d, [path], issue, note)
+                # Re-measured AFTER building, and announced when it is still
+                # over budget. The whole-branch check above cannot see this: a
+                # single file's diff plus its full text can exceed the limit on
+                # its own, and that chunk would go out oversized with the model
+                # silently looking at more than the budget allows. Say so
+                # rather than let the split look complete.
+                if len(prompt.encode()) > MAX_PROMPT_BYTES:
+                    prompt = build_prompt(
+                        d, [path], issue,
+                        note + f" NOTE: this one file is itself over "
+                        f"{MAX_PROMPT_BYTES} bytes; your view may be partial.",
+                    )
+                chunks.append((f"{path} (one file of a split review)", prompt))
         else:
             chunks.append((f"whole branch, {len(touched)} file(s)",
                            build_prompt(whole, touched, issue)))
+
+        # No chunks cannot happen from the branches above, but if it ever did,
+        # falling through would print "No suspected logic issues" and exit 0 --
+        # a review in which NO MODEL CALL RAN rendering as a clean pass, which
+        # is the one failure this script exists to prevent. Fail loudly instead.
+        if not chunks:
+            raise ReviewError(
+                "no review chunk could be built (every touched file may be "
+                "deleted), so nothing was reviewed"
+            )
 
         all_findings: list[dict] = []
         for label, prompt in chunks:
