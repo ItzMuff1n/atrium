@@ -252,8 +252,23 @@ def parse_findings(content: str) -> list[dict]:
 
 
 def review_chunk(prompt: str, model: str, api_url: str, key: str) -> list[dict]:
+    """One review call, with the sibling's error type TRANSLATED.
+
+    review-pr.py raises its OWN `ReviewError` class, which is a different
+    object from this module's. Without the translation below, a transport
+    failure escapes as an uncaught exception: the process still exits 1 (the
+    interpreter's own non-zero), but the machine-readable
+    `review-batch: could-not-review:` line is never printed, so anything
+    reading stdout cannot tell "review failed" from "the script crashed".
+    That broke the documented contract, and the T3 detector caught it -- see
+    the PR body. Exit code alone is not the contract; the marker is.
+    """
     review_pr = _load_review_pr()
-    return parse_findings(review_pr.ask_model(prompt, model, api_url, key))
+    try:
+        raw = review_pr.ask_model(prompt, model, api_url, key)
+    except review_pr.ReviewError as exc:
+        raise ReviewError(str(exc)) from exc
+    return parse_findings(raw)
 
 
 def main() -> int:
