@@ -26,8 +26,24 @@ OUTSIDE="$(dirname "$ROOT")/atrium-2d-outside"
 # built inside it makes the harness's own setup look like an escape. (Found by
 # running it: the first version did exactly that.)
 STAGE="$(dirname "$ROOT")/atrium-2d-stage"
-BIN="./target/debug/atrium-watcher"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+
+# The binary lives in the WORKSPACE target dir, not in the crate's.
+#
+# `cargo build` in a cargo workspace writes to the workspace root's target/debug,
+# whatever directory it is run from. The previous version used
+# `./target/debug/atrium-watcher` after `cd "$HERE"`, so it resolved to
+# `crates/watcher/target/debug/` — a path the build never writes. It only ever
+# worked because a stale binary from an earlier session happened to sit there, and
+# the `-newer` check then compared the wrong artefact against the sources.
+# Observed 24 Sep 2026: crates/watcher/target/debug/atrium-watcher was 19:12:12,
+# while crates/watcher/src/lib.rs was 19:34:51 — the script was testing a binary
+# 22 minutes older than the code it claimed to test.
+#
+# Resolve to the workspace root explicitly and refuse to guess. (hand-test-1b.sh
+# carries the same fix; it was the first script repaired this way.)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$REPO_ROOT/target/debug/atrium-watcher"
 
 cd "$HERE" || { echo "cannot cd to $HERE"; exit 2; }
 
@@ -96,18 +112,51 @@ echo "outside : $OUTSIDE"
 echo
 
 # Rebuild if any source file is newer than the binary, and say so when it happens.
+# The `-newer` test compares the WORKSPACE binary against the workspace sources;
+# testing the crate-relative binary against crate sources was the defect above.
 NEED_BUILD=0
 if [ ! -x "$BIN" ]; then NEED_BUILD=1; fi
-if [ -x "$BIN" ] && [ -n "$(find src tests -newer "$BIN" -print -quit 2>/dev/null)" ]; then
+if [ -x "$BIN" ] && [ -n "$(find "$REPO_ROOT"/crates/watcher/src "$REPO_ROOT"/crates/watcher/tests "$REPO_ROOT"/crates/watcher/Cargo.toml -newer "$BIN" -print -quit 2>/dev/null)" ]; then
   NEED_BUILD=1
 fi
 if [ "$NEED_BUILD" = 1 ]; then
   echo "  building (a source file is newer than the binary, or the binary is absent)"
-  if ! cargo build 2>&1 | tail -3; then
-    echo "  BUILD FAILED — nothing below can be trusted"; exit 1
+  # Capture the output so the EXIT STATUS IS CARGO'S, not tail's.
+  #
+  # This was `if ! ( cd … && cargo build 2>&1 | tail -3 )`. In a pipeline the status
+  # is the LAST command's, so that tested `tail` (which succeeds even when cargo
+  # fails) and the branch below was unreachable. A failed build therefore fell
+  # through to a stale binary — the exact failure this script exists to prevent.
+  # Found by review round 1 on this PR and confirmed by a failing test before the fix.
+  BUILD_OUT="$( cd "$REPO_ROOT" && cargo build -p atrium-watcher 2>&1 )"
+  BUILD_RC=$?
+  if [ "$BUILD_RC" -ne 0 ]; then
+    printf '%s\n' "$BUILD_OUT" | tail -3
+    echo "  BUILD FAILED (cargo exit $BUILD_RC) — nothing below can be trusted"; exit 1
   fi
 fi
-[ -x "$BIN" ] || { echo "no binary at $BIN"; exit 1; }
+[ -x "$BIN" ] || {
+  echo "no binary at $BIN" >&2
+  echo "  The workspace build writes there; if it is missing, the build failed." >&2
+  exit 1
+}
+# The check the topic requires: FAIL if the binary is older than any file in the
+# crate's `src/`.
+#
+# Rebuilding above is the normal path. This is the assertion for the case where the
+# build reports success and the artefact still did not refresh: without it the pass
+# would run a stale binary and report a verdict about superseded code. It refuses
+# rather than warns, because "a stale binary was visible in the output" is not the
+# same as "a stale binary was not used".
+STALE_AFTER="$(find "$REPO_ROOT/crates/watcher/src" -newer "$BIN" -print -quit 2>/dev/null)"
+if [ -n "$STALE_AFTER" ]; then
+  echo "REFUSING: $BIN is older than ${STALE_AFTER#"$REPO_ROOT"/} after a successful build." >&2
+  echo "  Testing it would report a verdict about code that is not on disk." >&2
+  exit 2
+fi
+# Name the artefact under test. A hands-on pass is worth only what it ran.
+echo "binary under test: $BIN"
+echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"
 
 rm -rf "$ROOT" "$OUTSIDE" "$STAGE"
 mkdir -p "$ROOT" "$OUTSIDE" "$STAGE"

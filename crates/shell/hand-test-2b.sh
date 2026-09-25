@@ -21,13 +21,43 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${1:-/tmp/atrium-2b-root}"
 OUTSIDE="$(dirname "$ROOT")/atrium-2b-outside"
-BIN="$HERE/target/debug/atrium-shell"
+
+# The binary lives in the WORKSPACE target dir, not the crate's.
+#
+# `cargo build` in a cargo workspace writes to the workspace root's target/debug,
+# whatever directory it is run from. The previous version used `$HERE/target/debug`
+# — crates/shell/target/debug — which the build never writes. It only "worked"
+# because a stale binary from an earlier session sat there, so the `[ ! -x ]` guard
+# skipped building and this pass ran against old code. The stale per-crate target/
+# dirs have since been deleted, which turns that silent staleness into a hard failure.
+# Resolve to the workspace root explicitly. (Same fix as hand-test-1b.sh.)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$REPO_ROOT/target/debug/atrium-shell"
 SELF_TAG="atrium-2b-harness-$$"
 
-if [ ! -x "$BIN" ]; then
-    echo "building..." >&2
-    (cd "$HERE" && cargo build >/dev/null 2>&1) || { echo "cargo build failed" >&2; exit 2; }
+NEED_BUILD=0
+[ -x "$BIN" ] || NEED_BUILD=1
+if [ -x "$BIN" ] && [ -n "$(find "$REPO_ROOT"/crates/shell/src "$REPO_ROOT"/crates/shell/tests "$REPO_ROOT"/crates/shell/Cargo.toml -newer "$BIN" -print -quit 2>/dev/null)" ]; then
+    NEED_BUILD=1
 fi
+if [ "$NEED_BUILD" = 1 ]; then
+    echo "building (binary absent, or a crate source is newer than it)..." >&2
+    (cd "$REPO_ROOT" && cargo build -p atrium-shell >/dev/null 2>&1) || { echo "cargo build failed" >&2; exit 2; }
+fi
+[ -x "$BIN" ] || { echo "no binary at $BIN after building" >&2; exit 2; }
+# The check the topic requires: FAIL if the binary is older than any file in the
+# crate's `src/`. Rebuilding above is the normal path; this asserts the case where
+# the build reports success and the artefact still did not refresh, so the pass
+# cannot run a stale binary and report a verdict about superseded code.
+STALE_AFTER="$(find "$REPO_ROOT/crates/shell/src" -newer "$BIN" -print -quit 2>/dev/null)"
+if [ -n "$STALE_AFTER" ]; then
+    echo "REFUSING: $BIN is older than ${STALE_AFTER#"$REPO_ROOT"/} after a successful build." >&2
+    echo "  Testing it would report a verdict about code that is not on disk." >&2
+    exit 2
+fi
+# Name the artefact under test, so a stale one is visible in the output.
+echo "binary under test: $BIN"
+echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"
 
 rm -rf "$ROOT" "$OUTSIDE"
 mkdir -p "$ROOT/home/documents/sub" "$ROOT/home/work" "$ROOT/trap" "$OUTSIDE/sub"

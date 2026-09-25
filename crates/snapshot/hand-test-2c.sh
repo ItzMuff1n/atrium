@@ -27,7 +27,19 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-BIN="$HERE/target/debug/atrium-snapshot"
+
+# The binary lives in the WORKSPACE target dir, not the crate's.
+#
+# `cargo build` in a cargo workspace writes to the workspace root's target/debug,
+# whatever directory it is run from. The previous version used `$HERE/target/debug`
+# — crates/snapshot/target/debug — which the build never writes. The staleness check
+# below was already right in spirit, but it compared the wrong artefact against the
+# sources, and the build it triggered wrote somewhere else again. The stale
+# per-crate target/ dirs have since been deleted, which turns that silent staleness
+# into a hard failure. Resolve to the workspace root explicitly. (Same fix as
+# hand-test-1b.sh, which was repaired first.)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$REPO_ROOT/target/debug/atrium-snapshot"
 
 ROOT="${1:-/tmp/atrium-2c-root}"
 STORE="/tmp/atrium-2c-store"
@@ -35,22 +47,40 @@ OUTSIDE="/tmp/atrium-2c-outside"
 OTHER_ROOT="/tmp/atrium-2c-other-root"
 DECOY="/tmp/atrium-2c-decoy"
 
-if [ ! -x "$BIN" ]; then
-  echo "building the binary first..."
-  ( cd "$HERE" && cargo build --quiet ) || { echo "cargo build failed"; exit 1; }
-else
+NEED_BUILD=0
+[ -x "$BIN" ] || NEED_BUILD=1
+if [ -x "$BIN" ]; then
   # Rebuild if ANY source file is newer than the binary. Checking only that the
   # binary exists is not enough: after a source change the harness would run the
   # previous build and report a verdict about code that is no longer on disk.
   # This was observed during this phase — a negative test rebuilt a deliberately
   # broken copy, the source was then restored, and the harness ran the broken
   # binary and reported a failure in code that was already fixed.
-  NEWER="$(find "$HERE/src" "$HERE/tests" "$HERE/Cargo.toml" -newer "$BIN" 2>/dev/null | head -1)"
-  if [ -n "$NEWER" ]; then
-    echo "binary is older than $(basename "$NEWER") — rebuilding"
-    ( cd "$HERE" && cargo build --quiet ) || { echo "cargo build failed"; exit 1; }
-  fi
+  NEWER="$(find "$REPO_ROOT/crates/snapshot/src" "$REPO_ROOT/crates/snapshot/tests" "$REPO_ROOT/crates/snapshot/Cargo.toml" -newer "$BIN" 2>/dev/null | head -1)"
+  [ -n "$NEWER" ] && NEED_BUILD=1
 fi
+if [ "$NEED_BUILD" = 1 ]; then
+  if [ ! -x "$BIN" ]; then
+    echo "building the binary first..."
+  else
+    echo "binary is older than a crate source — rebuilding"
+  fi
+  ( cd "$REPO_ROOT" && cargo build -p atrium-snapshot --quiet ) || { echo "cargo build failed"; exit 1; }
+fi
+[ -x "$BIN" ] || { echo "no binary at $BIN after building"; exit 1; }
+# The check the topic requires: FAIL if the binary is older than any file in the
+# crate's `src/`. Rebuilding above is the normal path; this asserts the case where
+# the build reports success and the artefact still did not refresh, so the pass
+# cannot run a stale binary and report a verdict about superseded code.
+STALE_AFTER="$(find "$REPO_ROOT/crates/snapshot/src" -newer "$BIN" -print -quit 2>/dev/null)"
+if [ -n "$STALE_AFTER" ]; then
+  echo "REFUSING: $BIN is older than ${STALE_AFTER#"$REPO_ROOT"/} after a successful build." >&2
+  echo "  Testing it would report a verdict about code that is not on disk." >&2
+  exit 2
+fi
+# Name the artefact under test, so a stale one is visible in the output.
+echo "binary under test: $BIN"
+echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"
 
 # Fresh everything.
 rm -rf "$ROOT" "$STORE" "$OUTSIDE" "$OTHER_ROOT" "$DECOY"
