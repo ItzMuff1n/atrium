@@ -441,11 +441,28 @@ hands-on check.
 **Corollary:** if a phase cannot be verified hands-on, the phase is not defined
 properly and must be redefined before it is built.
 
+**Amended 25 Sep 2026 — for SCRIPTED gates only.** Muffin retired the hand-run for
+deterministic scripts: his re-run of a script the agent had already run adds nothing,
+and sign-off for a scripted phase is his approval of the evidence instead. His
+hands-on pass returns for what only he can judge — visible behaviour, from Phase 6 (the
+first UI) onward. **See "Hand-tests run in CI; a scripted phase is signed off on the
+evidence" below for the reasoning and for what this does and does not weaken.** The
+corollary above is unaffected: the phases after 2d include the first UI, which is
+judged by eye and cannot be scripted at all.
+
 ### Tests the agent writes are not proof
 
 They are useful, but a test written by the same process that wrote the bug shares
 the bug's assumptions. Tests **defined by the user** and watched to fail first
 are worth much more.
+
+**Amended 25 Sep 2026.** The blind attack lists (`TOPICS.md` §4, `docs/blind-attack-list-*.md`)
+are the mechanism that addresses this, and they are unaffected by the hand-test rule
+change below. What the change does do is put more weight on them: the hand-run was a
+second **execution**, never a second **design**, so a misunderstanding shared by the
+code and its harness passed both. That was true before the change and remains true
+after it — the blind list is the only thing that tests the shared assumption, not the
+signature.
 
 ### Path normalisation: accept redundant spellings, do not reject them
 
@@ -1078,3 +1095,53 @@ Both were demonstrated failing first: with `cargo` shadowed by a stub that repor
 success while building nothing, the pre-fix script proceeds and exercises a binary
 dated 2000-01-01 (exit 0), while the fixed script refuses (exit 2). A fix without a
 shown failure path is a claim, not a repair.
+
+## Hand-tests run in CI; a scripted phase is signed off on the evidence
+
+**Decided 25 Sep 2026 by Muffin.** This supersedes the hand-run half of "Every phase
+ends with a human-performed verification" above, for scripted gates only.
+
+**Decision.** Every `crates/*/hand-test-*.sh` runs automatically on every PR and every
+push, in `.github/workflows/hand-tests.yml`. The job fails if any script exits non-zero.
+**Sign-off for a scripted phase is Muffin's approval of the evidence — the output quoted
+in `STATUS.md` plus that CI run — not his re-run of the script.**
+
+**Why — his reason, which is the whole argument.** A re-run of a deterministic script
+by the person who did not write it adds nothing: same script, same binary, same output.
+It was never a second *test*. Calling it one would be dressing ceremony up as
+verification.
+
+**What this does not concede, and it matters.** The hand-run was **never a second
+designer**. The agent writes both the code and the harness that tests it, so a
+misunderstanding is encoded in both and passes both — a re-run by Muffin reproduced the
+agent's own assumptions exactly. The only thing the hand-run added was a second
+**execution** on a different machine. The blind attack lists (`TOPICS.md` §4) are the
+mechanism that tests the shared assumption, and they are untouched by this change. So
+the sign-off was **already** an approval of evidence in everything but name; this change
+says so plainly. It is not a reduction in what is tested.
+
+**Rejected — dropping the scripted gate entirely.** The scripted hand-tests remain the
+gate; what changed is *who runs them*. CI runs them, on every PR, where a hand-run
+happened once per phase and not at all in between. **The rule change makes the scripted
+gate run more often, not less.**
+
+**Rejected — Muffin's hands-on testing going away altogether.** It returns where it is
+the only instrument: **visible behaviour, from Phase 6 (the first UI) onward.** A
+terminal transcript can be read; a window rendering wrong cannot. Nothing about a
+scripted transcript covers "does it look right", "does it feel wrong", "does the
+animation stutter" — so those phases keep the hand-run, and the corollary above ("if a
+phase cannot be verified hands-on, the phase is not defined properly") keeps its force
+for them.
+
+**What it costs, stated rather than glossed.** A green CI run is an artefact of this
+repo's own scripts, so a wrong script is green in CI too. The guard (`scripts/guard.sh`)
+is the counterweight and is unaffected: it separately refuses a PR that **removes or
+weakens** a case, which is a different question from whether the remaining cases pass.
+Both are needed. Neither substitutes for the other.
+
+**When it takes effect, stated exactly.** **Phase 2d is the last hand-run.** Muffin ran
+that gate himself on 25 Sep 2026 and it passed, so its `STATUS.md` entry under "Verified
+hands-on" is a literal recount of a run he performed — nothing about it changes. The new
+rule applies to the **next** scripted phase onward: from there, an entry in that section
+records his **approval of the evidence** rather than a run he performed, and must say so
+in as many words, so a later session cannot read an approval as a re-run.

@@ -152,21 +152,42 @@ into the topic total.
 
 ## 8. `needs-muffin`
 
-`needs-muffin` means **only** two things: a **hand-test**, or a **product decision**
-about how Atrium behaves, looks or feels. It is not a parking label (§6), not a
-"this was hard" label, and not a way to hand back work the Lead should have done.
+`needs-muffin` means **only** two things: a thing **only he can judge**, or a **product
+decision** about how Atrium behaves, looks or feels. It is not a parking label (§6), not
+a "this was hard" label, and not a way to hand back work the Lead should have done.
+
+**Changed 25 Sep 2026 — a scripted hand-test is no longer a reason for the label.** It
+runs in CI (`.github/workflows/hand-tests.yml`) and is signed off by Muffin approving
+the evidence, so it is not something to hand him to run. What remains his:
+
+- **Visible behaviour** — from Phase 6 (the first UI) onward. Anything judged by eye:
+  does it look right, does it feel wrong, does it stutter. Not scriptable, so not CI.
+- **Product decisions** — how Atrium behaves, looks or feels.
+- **Approving evidence** for a scripted phase, which is an approval, not a run.
 
 ## 9. End of a topic
 
 Open **one** issue labelled `needs-muffin`, titled **`Your turn: <topic>`**, listing:
-the **hand-tests** with exact steps; the **decisions** needed with their options;
-and the **parked items** with why each was parked. In chat, reply with **five lines
-maximum** — detail goes in the issue.
+the **decisions** needed with their options; the **evidence awaiting his approval**,
+with the exact commands and the CI runs that carry them; and the **parked items** with
+why each was parked. In chat, reply with **five lines maximum** — detail goes in the
+issue.
+
+**A scripted hand-test is not listed as something for him to run.** Quote its output and
+the CI run instead, and say plainly that the sign-off is his approval of that evidence.
 
 ## 10. Close
 
 Act on Muffin's report. Record sign-offs in `docs/STATUS.md` — **his move, never
 ours**. Then close the milestone and the plan issue.
+
+**Changed 25 Sep 2026, for scripted phases.** The *approval* is still his and only his;
+what the agent records is the evidence he approved. When he approves a scripted phase,
+the entry that moves into "Verified hands-on" must state that it records **his approval
+of the evidence**, name what he did not run, and carry the CI run — so a later session
+cannot mistake an approval for a re-run. **Phase 2d is the last entry that is a recount
+of a run he performed** (25 Sep 2026); from the next scripted phase on, the distinction
+is mandatory in the entry itself.
 
 ## 11. Running a topic as a `/goal`
 

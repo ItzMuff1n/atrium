@@ -1,0 +1,122 @@
+name: hand-tests
+
+# The scripted hand-test harnesses, run automatically.
+#
+# WHY THIS EXISTS
+#
+# Until 25 Sep 2026 the hand-test scripts were Muffin's to run by hand, and his
+# run was the phase sign-off. Muffin retired that on 25 Sep 2026: for a SCRIPTED
+# gate his re-run adds nothing, because the script is deterministic and the agent
+# has already run it. Sign-off for a scripted phase is now his approval of the
+# evidence -- the output quoted in the status file, plus this job. His hands-on
+# testing returns for what only he can judge: visible behaviour, from Phase 6 on.
+#
+# So the scripted gates need a machine behind them, or the rule change would have
+# made them weaker. That is this job. Every `crates/*/hand-test-*.sh` runs on every
+# PR and every push, and the job fails if any line fails.
+#
+# WHAT IT ACTUALLY CHECKS
+#
+# These scripts are not ordinary tests, and the reason is in each script's header:
+# three of their checks are independent of what the program says about itself.
+# The outside directory is fingerprinted before the run and after every line;
+# host /etc/passwd's checksum and mtime likewise; and no default-output line may
+# contain the environment root's real path. A script exits 1 -- not 0 -- when a
+# line fails, so the exit code is the gate. Verified before adding this job: all
+# five scripts exit 1 on a broken expectation, not 0.
+#
+# WHAT THIS DOES NOT REPLACE
+#
+# `scripts/guard.sh` proves a PR did not REMOVE or WEAKEN a case. This job proves
+# the cases that exist still PASS. They are different questions and both are
+# needed: an edit that deletes a failing case passes here and is caught only by
+# the guard.
+#
+# The binary under test is the workspace-root artefact, and the scripts refuse to
+# run a stale one (topic #69 T6). Building once up front is what keeps that true
+# here: after a fresh build nothing is stale, so no script rebuilds mid-run and
+# none can be refused for a stale artefact CI did not produce.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  hand-tests:
+    name: hand-tests
+    runs-on: ubuntu-latest
+
+    steps:
+      # v7.0.1, not v4: v4 declares `using: node20` and GitHub is retiring the
+      # Node 20 runtime. v7.0.1 declares node24. Same pin as check.yml.
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      # rustup is preinstalled on GitHub's ubuntu-latest runners. This installs
+      # whatever rust-toolchain.toml names, so CI and the developer machine
+      # cannot drift. Same step as check.yml.
+      - name: Install the pinned toolchain
+        run: rustup show
+
+      # Same cache key as check.yml, deliberately: this job shares the artefact
+      # cache with the check job rather than fighting it for a different one.
+      - name: Cache cargo registry and build output
+        uses: actions/cache@v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      # Build once, at the workspace root. `cargo build` in a workspace writes
+      # target/debug at the ROOT whatever directory it runs from, which is the
+      # path the scripts now resolve -- and building here means no script has to
+      # rebuild and none is refused for staleness.
+      - name: Build the binaries the hand-tests drive
+        run: cargo build --workspace
+
+      # The list is discovered from disk, not hardcoded, so a new crate's
+      # hand-test joins this job by existing. An empty list is a failure: it
+      # would mean the glob went wrong, and a gate that silently checks nothing
+      # reads exactly like a gate that passes.
+      - name: Run every hand-test script
+        run: |
+          set -u
+          shopt -s nullglob
+          scripts=(crates/*/hand-test-*.sh)
+          if [ "${#scripts[@]}" -eq 0 ]; then
+            echo "no crates/*/hand-test-*.sh found -- refusing to pass an empty gate"
+            exit 1
+          fi
+          echo "hand-test scripts found: ${#scripts[@]}"
+          printf '  %s\n' "${scripts[@]}"
+          echo
+
+          FAILED=0
+          for f in "${scripts[@]}"; do
+            echo "==================================================================="
+            echo "### $f"
+            echo "==================================================================="
+            start="$(date +%s)"
+            if bash "$f"; then
+              rc=0
+            else
+              rc=$?
+            fi
+            end="$(date +%s)"
+            echo "--- $f exited $rc after $((end - start))s"
+            echo
+            if [ "$rc" -ne 0 ]; then
+              FAILED=1
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "hand-tests: at least one script failed. Scroll up for the [FAIL] lines."
+            exit 1
+          fi
+          echo "hand-tests: every script exited 0"

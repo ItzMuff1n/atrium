@@ -255,14 +255,31 @@ So the only hands-on request is **the end of a phase** — the verification the 
 is signed off by. Nothing in between. Mid-phase checks, builds, tests, harness runs,
 probes and re-runs are the agent's own work and must be done without asking.
 
-**What his end-of-phase run is for.** Mechanically it usually adds nothing: the same
-script on the same binary is deterministic, and the agent has already run it. It is
-not a second test — it is the **signature**. The agent writes both the code and the
-harness that tests it, so a misunderstanding would be encoded in both and pass
-confidently; a re-run by the agent is the same head twice. His run is the only
-authority gate, which is why §10 gives the move to "verified hands-on" to him alone.
-Do not dress it up as a technical necessity and do not skip it as ceremony — state
-which of the two it is when he asks.
+**Changed 25 Sep 2026, for scripted gates.** A scripted hand-test is no longer run by
+Muffin at all. It runs in CI (`.github/workflows/hand-tests.yml`, on every PR and every
+push, failing if any script exits non-zero), and **sign-off for a scripted phase is his
+approval of the evidence** — the quoted output plus that CI run — **not his re-run.**
+His reasoning, which is the whole argument: a re-run of a deterministic script adds
+nothing, because the agent has already run it. His hands-on pass returns where it is the
+only instrument — **visible behaviour, from Phase 6 (the first UI) onward.**
+
+**What "evidence" must contain**, so it can actually be approved rather than taken on
+trust: the exact command, the script's own final line quoted verbatim, the CI run that
+carries it, and — where the harness has independent checks (the outside directory, host
+`/etc/passwd`, real-path leaks) — the numbers those produced.
+
+**Phase 2d is the last hand-run** (Muffin ran it, 25 Sep 2026). Entries in that section
+from the next scripted phase on record his **approval of the evidence** and must say so
+in as many words, so a later session cannot read an approval as a re-run.
+
+**What his pass was for, and still is where it applies.** For a scripted gate,
+mechanically it added little: the same script on the same binary is deterministic, and
+the agent had already run it. But it was never a second *designer* — the agent writes
+both the code and the harness that tests it, so a misunderstanding is encoded in both
+and passes both; his run reproduced the agent's own assumptions exactly. The thing that
+tests the shared assumption is the **blind attack list** (`TOPICS.md` §4), and that is
+where the independent check lives. The agent's own harness is not the authority gate for
+a scripted phase — the blind list and CI are.
 
 **Corollary:** the agent must be able to say it has already run the gate itself, and
 must not present an unrun command as a request he has to satisfy.
