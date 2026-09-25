@@ -317,7 +317,12 @@ fn a_stale_corpse_survives_the_old_shape_and_is_swept_by_the_fix() {
 /// fixture belongs to a process that may still be using it.
 #[test]
 fn the_sweep_leaves_a_fresh_fixture_alone() {
-    let prefix = format!("atrium-t7fresh-{}-", std::process::id());
+    // A prefix belonging to THIS test only. Two reasons it includes a nonce:
+    // a previous run of this test could have been killed and left a directory
+    // whose pid is later recycled, and `removed` counts every match under the
+    // prefix — so a stale leftover would fail the count even though the fresh
+    // fixture survived. That was review round 1's F1, and this nonce is the fix.
+    let prefix = format!("atrium-t7fresh-{}-{}-", std::process::id(), unique_nonce());
     let fresh = std::env::temp_dir().join(tag(&prefix));
     std::fs::create_dir_all(&fresh).unwrap();
 
@@ -327,7 +332,7 @@ fn the_sweep_leaves_a_fresh_fixture_alone() {
         "  swept {removed}; fresh fixture survived = {}",
         fresh.exists()
     );
-    assert_eq!(removed, 0, "the sweep removed a fresh fixture");
+    assert_eq!(removed, 0, "the sweep removed a fixture that was not stale");
     assert!(
         fresh.exists(),
         "the sweep removed a fresh fixture — it would break a concurrent run"
@@ -335,14 +340,57 @@ fn the_sweep_leaves_a_fresh_fixture_alone() {
     let _ = std::fs::remove_dir_all(&fresh);
 }
 
-/// The sweep that actually ships must use the real prefix and the one-hour
-/// threshold this file tests against. Read from the source, because that is where
-/// the rule lives — the runtime copy here is parameterised and cannot prove it.
+/// A nonce that cannot repeat within a test binary's lifetime, on top of the pid.
+/// `unique()` in `shell_tests.rs` is the same idea; this file is a separate test
+/// binary and cannot reach it.
+fn unique_nonce() -> u64 {
+    static N: AtomicU64 = AtomicU64::new(0);
+    // Mixed with the clock so a *recycled pid in a later run* still differs: the
+    // counter alone restarts at 0, which is exactly the #40 collision shape.
+    let n = N.fetch_add(1, Ordering::SeqCst);
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    n ^ nanos.rotate_left(17)
+}
+
+/// The sweep that actually ships must (a) use the real prefix, (b) use the
+/// one-hour threshold, and (c) actually be CALLED from `make_root`.
+///
+/// Checked against the source with the function *definition* removed from the
+/// text first. A plain `contains("sweep_stale_fixtures()")` is satisfied by the
+/// definition line `fn sweep_stale_fixtures()` itself — so the check passed even
+/// with the call deleted and the sweep no longer running at all. That was review
+/// round 1's F2; this is the fix, and the failure path is shown in the test body.
 #[test]
-fn the_shipped_sweep_uses_the_real_prefix_and_threshold() {
+fn the_shipped_sweep_uses_the_real_prefix_and_threshold_and_is_actually_called() {
     let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/shell_tests.rs"))
         .expect("shell_tests.rs must be readable");
-    println!("  checking shell_tests.rs for the real prefix and threshold");
+
+    // Strip the definition so only real call sites remain.
+    let without_def = src.replace("fn sweep_stale_fixtures() {", "");
+    let def_removed = !without_def.contains("fn sweep_stale_fixtures()");
+    assert!(
+        def_removed,
+        "could not strip the definition; the call check below would be meaningless"
+    );
+
+    // FAILURE PATH, demonstrated in the test itself: if the call is taken out of
+    // make_root, this check must go red. The assertion below is the same one that
+    // runs against the real source two lines later.
+    let with_call_removed = without_def.replace("    sweep_stale_fixtures();\n", "");
+    let call_gone = !with_call_removed.contains("sweep_stale_fixtures();");
+    assert!(
+        call_gone,
+        "could not construct the call-removed case; the check below is unproven"
+    );
+    assert!(
+        !with_call_removed.contains("sweep_stale_fixtures();"),
+        "the call check accepts a source with the call removed — it is broken"
+    );
+
+    println!("  definition stripped, call-removed case shown to fail the check");
     assert!(
         src.contains("\"atrium-2b-test-\""),
         "shell_tests.rs no longer uses the real fixture prefix"
@@ -352,9 +400,40 @@ fn the_shipped_sweep_uses_the_real_prefix_and_threshold() {
         "shell_tests.rs no longer uses a 1-hour staleness threshold"
     );
     assert!(
-        src.contains("sweep_stale_fixtures()"),
-        "shell_tests.rs no longer calls the sweep"
+        without_def.contains("sweep_stale_fixtures();"),
+        "shell_tests.rs defines the sweep but no longer CALLS it — the stale-fixture \
+         population would accumulate again"
     );
+}
+
+/// A throwaway directory that removes itself, for the tests that build scripts.
+///
+/// The first version of these tests cleaned up with a trailing
+/// `remove_dir_all` — which any failing assertion skips. That is precisely the
+/// shape `#59` condemns in `shell_tests.rs`, and these directories use prefixes
+/// the shipped sweep does not match (`atrium-t7fd-`, `-inject-`, `-atomic-`), so
+/// a red run leaked them permanently. Review round 1's F3. Fixed by using the
+/// same guard the rest of the file insists on.
+struct TempDir {
+    path: PathBuf,
+}
+
+impl TempDir {
+    fn new(prefix: &str) -> Self {
+        let path = std::env::temp_dir().join(tag(prefix));
+        std::fs::create_dir_all(&path).unwrap();
+        TempDir { path }
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        match std::fs::remove_dir_all(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => eprintln!("WARNING: could not remove {}: {e}", self.path.display()),
+        }
+    }
 }
 
 // ==========================================================================
@@ -365,9 +444,8 @@ fn the_shipped_sweep_uses_the_real_prefix_and_threshold() {
 /// the path it is about to exec; the fix never does.
 #[test]
 fn the_old_write_shape_holds_a_write_fd_on_the_exec_path_and_the_fix_never_does() {
-    let root = std::env::temp_dir().join(tag("atrium-t7fd-"));
-    std::fs::create_dir_all(&root).unwrap();
-    let script = root.join("argv.sh");
+    let dir = TempDir::new("atrium-t7fd-");
+    let script = dir.path.join("argv.sh");
 
     // OLD: write straight to the final path and inspect /proc/self/fd while open.
     {
@@ -417,8 +495,6 @@ fn the_old_write_shape_holds_a_write_fd_on_the_exec_path_and_the_fix_never_does(
         writable_fd_on(&script).is_none(),
         "the final path must be clean after the rename"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// Injection: with a write fd deliberately held on the target, the exec really
@@ -426,9 +502,8 @@ fn the_old_write_shape_holds_a_write_fd_on_the_exec_path_and_the_fix_never_does(
 /// a detector that cannot see the failure cannot report its absence.
 #[test]
 fn inject_shows_etxtbsy_is_reachable_when_a_write_fd_is_held() {
-    let root = std::env::temp_dir().join(tag("atrium-t7inject-"));
-    std::fs::create_dir_all(&root).unwrap();
-    let script = root.join("argv.sh");
+    let dir = TempDir::new("atrium-t7inject-");
+    let script = dir.path.join("argv.sh");
     write_script_direct(&script, b"#!/bin/sh\nexit 0\n");
 
     let holder = std::fs::OpenOptions::new()
@@ -446,7 +521,6 @@ fn inject_shows_etxtbsy_is_reachable_when_a_write_fd_is_held() {
         ),
     }
     drop(holder);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The fix must still produce a script that actually runs, with the right content
@@ -454,9 +528,8 @@ fn inject_shows_etxtbsy_is_reachable_when_a_write_fd_is_held() {
 /// regression in the other direction.
 #[test]
 fn the_atomic_write_still_produces_a_runnable_script() {
-    let root = std::env::temp_dir().join(tag("atrium-t7atomic-"));
-    std::fs::create_dir_all(&root).unwrap();
-    let script = root.join("argv.sh");
+    let dir = TempDir::new("atrium-t7atomic-");
+    let script = dir.path.join("argv.sh");
     write_script_atomic(&script, b"#!/bin/sh\nprintf 'ran=%s\\n' \"$1\"\n");
 
     let out = std::process::Command::new(&script)
@@ -477,6 +550,4 @@ fn the_atomic_write_still_produces_a_runnable_script() {
         String::from_utf8_lossy(&out2.stdout).contains("second"),
         "a second atomic write must replace the first"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
