@@ -68,6 +68,16 @@ if [ "$NEED_BUILD" = 1 ]; then
   ( cd "$REPO_ROOT" && cargo build -p atrium-snapshot --quiet ) || { echo "cargo build failed"; exit 1; }
 fi
 [ -x "$BIN" ] || { echo "no binary at $BIN after building"; exit 1; }
+# The check the topic requires: FAIL if the binary is older than any file in the
+# crate's `src/`. Rebuilding above is the normal path; this asserts the case where
+# the build reports success and the artefact still did not refresh, so the pass
+# cannot run a stale binary and report a verdict about superseded code.
+STALE_AFTER="$(find "$REPO_ROOT/crates/snapshot/src" -newer "$BIN" -print -quit 2>/dev/null)"
+if [ -n "$STALE_AFTER" ]; then
+  echo "REFUSING: $BIN is older than ${STALE_AFTER#"$REPO_ROOT"/} after a successful build." >&2
+  echo "  Testing it would report a verdict about code that is not on disk." >&2
+  exit 2
+fi
 # Name the artefact under test, so a stale one is visible in the output.
 echo "binary under test: $BIN"
 echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"

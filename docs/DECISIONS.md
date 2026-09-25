@@ -1053,3 +1053,28 @@ detector made exactly that mistake.
 load-bearing part: with them gone the old scripts fail their `[ -x ]` check
 outright, so the defect cannot silently return. The path fix turns a silent wrong
 result into either a correct one or a loud failure.
+
+**And the check the topic asked for is a REFUSAL, not a report.** T6 required "a
+check that fails if the binary is older than any file in the crate's `src/`". An
+earlier revision of this change printed the binary's path, mtime and sha256 and
+called that the protection — which says a stale artefact is *visible*, not that one
+is *rejected*, and left a stale binary still executable. Each script now asserts
+freshness after building and **exits 2** if the artefact is still older than a
+source, with the failing path named. Both are kept: the printed identity is how a
+human reads what was tested, the assertion is what stops a stale one being used.
+
+**Two defects in this change found by review, recorded because they were mine:**
+
+1. `if ! ( cd … && cargo build … 2>&1 | tail -3 )` tests the status of `tail`, the
+   last command in the pipeline — which succeeds even when `cargo` fails (no
+   `pipefail` in these scripts). The `BUILD FAILED` branch was unreachable, so a
+   failed build fell through to a stale binary: precisely the failure this work
+   exists to prevent. Output is now captured and `$?` read directly from the build.
+   Confirmed by a failing test before the fix (both in isolation and with a real
+   failing `cargo build`), and by a stub `cargo` that exits non-zero.
+2. The requirement above was met only in its weaker form. Fixed as described.
+
+Both were demonstrated failing first: with `cargo` shadowed by a stub that reports
+success while building nothing, the pre-fix script proceeds and exercises a binary
+dated 2000-01-01 (exit 0), while the fixed script refuses (exit 2). A fix without a
+shown failure path is a claim, not a repair.
