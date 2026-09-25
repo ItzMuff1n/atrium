@@ -16,15 +16,90 @@ use atrium_shell::{
     run, ExitStatus, RunError, RunOptions, VirtualPath, CHILD_PATH, DEFAULT_MAX_OUTPUT_BYTES,
 };
 
+/// A throwaway fixture root that removes itself, **even when the test panics**.
+///
+/// `cleanup()` was called at the end of each test body, so any panic (or any
+/// killed run) skipped it and left the whole tree behind. Measured 19 Sep 2026:
+/// **27,512** leftover `/tmp/atrium-2b-test-*` directories from 775 pids, all
+/// complete fixtures. Killing the binary mid-run reproduced it every time (24, 18,
+/// 16, 12, 10, 2 leaked fixtures at staggered kill points).
+///
+/// A `Drop` runs during unwinding, so the tree goes away on the panic path too.
+/// `Drop` is also the one place that cannot be forgotten by a new test — the
+/// previous shape relied on every test body remembering to call `cleanup()`.
+///
+/// `Drop` **reports** a removal failure instead of discarding it. The sweep below
+/// is what makes the fixture tag safe against a recycled pid (issue #40: a
+/// recycled pid restarts the counter and requests the same tag sequence), so a
+/// sweep that silently failed would be the exact error worth knowing about.
+/// Reporting rather than panicking in `Drop` is deliberate: panicking there would
+/// abort during unwinding, and it would mask the original assertion failure that
+/// the test was actually trying to report.
+struct Fixture {
+    root: PathBuf,
+    outside: PathBuf,
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        for p in [&self.root, &self.outside] {
+            match std::fs::remove_dir_all(p) {
+                Ok(()) => {}
+                // Already gone is the normal case when a sweep succeeded first.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => eprintln!(
+                    "WARNING: fixture cleanup failed for {}: {} — leaves a directory \
+                     behind that the next run's sweep must remove",
+                    p.display(),
+                    e
+                ),
+            }
+        }
+    }
+}
+
 /// Build a throwaway environment root with the attack-list-2b.md fixtures,
 /// by hand (mkdir/write/symlink — NEVER another crate's fixture mode), plus
-/// a throwaway OUTSIDE directory beside it. Returns (root, outside, tag).
-fn make_root() -> (PathBuf, PathBuf, String) {
+/// a throwaway OUTSIDE directory beside it.
+///
+/// Returns a guard whose `Drop` removes both paths, even while unwinding from a
+/// panic. Callers copy the two paths out of it:
+///
+/// ```ignore
+/// let f = make_root();
+/// let root = f.root.clone();
+/// let outside = f.outside.clone();
+/// ```
+///
+/// The copies are deliberate. Rewriting every use-site in this file to go through
+/// the guard would have touched ~120 `&root` expressions and ~26 `root.method()`
+/// calls, and a mistake in any one of them is a change to what the test asserts.
+/// Keeping `root` and `outside` as ordinary `PathBuf`s means every existing
+/// expression is untouched; the only new obligation is that `f` stays bound, which
+/// it does because it is a named local in the same scope. The guard is what
+/// removes the tree, so a test cannot leak by forgetting a call.
+fn make_root() -> Fixture {
+    sweep_stale_fixtures();
     let tag = format!("atrium-2b-test-{}-{}", std::process::id(), unique());
     let root = std::env::temp_dir().join(&tag);
     let outside = std::env::temp_dir().join(format!("{}-outside", tag));
-    let _ = std::fs::remove_dir_all(&root);
-    let _ = std::fs::remove_dir_all(&outside);
+    // The pre-use sweep. This is load-bearing: it clears a leftover directory at
+    // this exact tag before the symlink below is created, which is what makes the
+    // tag safe under pid recycling.
+    for p in [&root, &outside] {
+        match std::fs::remove_dir_all(p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => panic!(
+                "make_root: the pre-use sweep of {} failed: {} — a leftover at this \
+                 tag would make the symlink below fail with EEXIST, which is the \
+                 failure mode of issue #40. Refusing to build a fixture on top of an \
+                 unclean path.",
+                p.display(),
+                e
+            ),
+        }
+    }
 
     std::fs::create_dir_all(root.join("home/documents/sub")).unwrap();
     std::fs::create_dir_all(root.join("home/work")).unwrap();
@@ -37,7 +112,96 @@ fn make_root() -> (PathBuf, PathBuf, String) {
     std::fs::create_dir_all(outside.join("sub")).unwrap();
     std::fs::write(outside.join("sentinel.txt"), b"sentinel\n").unwrap();
     std::fs::write(outside.join("sub/keep.txt"), b"keep\n").unwrap();
-    (root, outside, tag)
+    Fixture { root, outside }
+}
+
+impl Fixture {
+    /// The OUTSIDE path (`<root>-outside`), for the §B.7/B.8 link-out fixtures.
+    #[allow(dead_code)]
+    fn outside_path(&self) -> &Path {
+        &self.outside
+    }
+}
+
+/// Fixtures from runs that were **killed**, not panicked.
+///
+/// `Drop` covers the panic path. It cannot cover `SIGKILL` (Ctrl-C during
+/// `cargo test`, a timeout, a killed process): no code runs, so the tree stays.
+/// That is the case the issue reproduced — staggered kills left 24, 18, 16, 12,
+/// 10 and 2 fixtures — and it is not fixable from inside the dying process.
+///
+/// So the leftover population is swept instead of being left to accumulate.
+/// Measured 19 Sep 2026: **27,512** directories from 775 distinct pids, nothing
+/// ever collecting them. Once per process, before the first fixture is built,
+/// every `atrium-2b-test-*` directory older than `STALE_AFTER` is removed.
+///
+/// The age threshold is what keeps this safe with concurrent runs: a live run's
+/// fixtures are seconds old, so it can never have one older than an hour swept
+/// from under it. Anything older than an hour belongs to a process that is gone.
+///
+/// A directory that cannot be removed is **reported**, never silently skipped —
+/// the whole point of #59 is that a discarded `remove_dir_all` error is invisible,
+/// and an invisible failed sweep is what would let a recycled pid hit `EEXIST`.
+fn sweep_stale_fixtures() {
+    use std::sync::Once;
+    use std::time::{Duration, SystemTime};
+
+    const STALE_AFTER: Duration = Duration::from_secs(60 * 60);
+    static ONCE: Once = Once::new();
+
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "WARNING: could not read {} to sweep stale fixtures: {e}",
+                    dir.display()
+                );
+                return;
+            }
+        };
+        let now = SystemTime::now();
+        let mut removed = 0usize;
+        let mut failed = 0usize;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !name.starts_with("atrium-2b-test-") {
+                continue;
+            }
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let age = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| now.duration_since(m).ok());
+            match age {
+                Some(a) if a > STALE_AFTER => match std::fs::remove_dir_all(entry.path()) {
+                    Ok(()) => removed += 1,
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!(
+                            "WARNING: stale fixture sweep could not remove {}: {e}",
+                            entry.path().display()
+                        );
+                    }
+                },
+                Some(_) => {} // fresh: possibly a live run's. Leave it.
+                None => eprintln!(
+                    "WARNING: could not read the mtime of {}; not sweeping it",
+                    entry.path().display()
+                ),
+            }
+        }
+        if removed > 0 || failed > 0 {
+            eprintln!(
+                "atrium-2b fixture sweep: removed {removed} stale fixture dir(s), {failed} failed"
+            );
+        }
+    });
 }
 
 /// A process-wide counter. The tag also carries the pid, so
@@ -59,13 +223,34 @@ fn unique() -> u64 {
     N.fetch_add(1, Ordering::SeqCst)
 }
 
-fn cleanup(root: &Path, outside: &Path) {
-    let _ = std::fs::remove_dir_all(root);
-    let _ = std::fs::remove_dir_all(outside);
-}
-
 fn vp(s: &str) -> VirtualPath {
     VirtualPath::new(s).expect("test paths are absolute, constant")
+}
+
+/// Write an executable script so the path that gets `exec`'d is **never open for
+/// writing**. That is what removes the `ETXTBSY` race (issue #62).
+///
+/// `std::fs::write` opens the final path `O_WRONLY` and holds that fd until it
+/// returns. `fork()` in **any** thread of this process copies the whole fd table,
+/// so that thread's child inherits the write fd and keeps it until its own
+/// `exec`. If our `exec` of the script lands inside one of those windows, the
+/// kernel refuses with `ETXTBSY` (os error 26) — measured at ~1 in 320 runs of
+/// this suite, and it fails a required check that has no override.
+///
+/// Writing to a sibling temp name and `rename`-ing it into place makes the
+/// content appear atomically. The executed path is therefore never a file anyone
+/// holds open for writing, so there is no fd to inherit. The `set_permissions`
+/// also happens on the temp path, before the rename, so the final path is created
+/// by the rename alone.
+///
+/// This removes the race rather than narrowing it: it does not depend on which
+/// other test forks when, and it needs no retry, sleep, serial pin or `#[ignore]`.
+fn write_executable_script(path: &Path, body: &[u8]) {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, body).unwrap();
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::rename(&tmp, path).unwrap();
 }
 
 fn sh(line: &str) -> (String, Vec<String>) {
@@ -99,70 +284,77 @@ fn shell_exit_code(line: &str) -> i32 {
 
 #[test]
 fn a1_pwd_is_the_resolved_directory() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "pwd");
     assert_eq!(o.status, ExitStatus::Exited(0));
     let printed = out_text(&o).trim().to_string();
     assert_eq!(Path::new(&printed), root.join("home/work").as_path());
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a2_relative_path_lands_inside_the_root() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     run_sh(&root, "/home/work", "touch relative.txt");
     assert!(root.join("home/work/relative.txt").exists());
     assert!(!outside.join("relative.txt").exists());
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a3_deep_chain_lands_inside_the_root() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     run_sh(&root, "/home/work", "mkdir -p a/b && touch a/b/deep.txt");
     assert!(root.join("home/work/a/b/deep.txt").exists());
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a4_virtual_root_is_the_environment_root() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/", "pwd");
     let printed = out_text(&o).trim().to_string();
     assert_eq!(Path::new(&printed), root.as_path());
     assert_ne!(printed, "/"); // must be the root, not the host's /
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a5_dotdot_from_inside_stays_inside() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     run_sh(&root, "/home/work", "touch ../sibling.txt");
     assert!(root.join("home/sibling.txt").exists());
     assert!(!outside.join("sibling.txt").exists());
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a6_deeper_cwd_works_the_same_way() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/documents/sub", "pwd");
     assert_eq!(
         Path::new(out_text(&o).trim()),
         root.join("home/documents/sub").as_path()
     );
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn a7_documents_is_the_roots_documents_not_the_hosts() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/documents", "pwd");
     assert_eq!(
         Path::new(out_text(&o).trim()),
         root.join("home/documents").as_path()
     );
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------------------- B. refusals
@@ -228,7 +420,9 @@ fn walk_files(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn b_refusals_name_the_reason_and_start_nothing() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     let real_paths: Vec<&Path> = vec![&root, &outside];
 
     assert_refused(
@@ -269,13 +463,13 @@ fn b_refusals_name_the_reason_and_start_nothing() {
     // B.8: degenerate-tail — link out followed by `..`. Phase 1b ruling:
     // the target is outside, so it rejects.
     assert_refused(&root, "/trap/escape/..", &["symlink"], &real_paths);
-
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn b9_refusal_leaves_the_filesystem_byte_identical() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     let before = snapshot(&root);
     let (p, a) = sh("touch marker_b9");
     for cwd in ["/home/../../work", "/nonexistent/work", "/afile.txt"] {
@@ -284,7 +478,6 @@ fn b9_refusal_leaves_the_filesystem_byte_identical() {
     }
     assert_eq!(snapshot(&root), before, "refusals changed the filesystem");
     assert!(!outside.join("marker_b9").exists());
-    cleanup(&root, &outside);
 }
 
 fn snapshot(root: &Path) -> Vec<String> {
@@ -304,47 +497,53 @@ fn snapshot(root: &Path) -> Vec<String> {
 
 #[test]
 fn b10_refusal_is_not_confused_with_a_commands_nonzero_exit() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     // A command exiting non-zero for its own reasons is RUNS, not refused.
     let o = run_sh(&root, "/home/work", "exit 3");
     assert_eq!(o.status, ExitStatus::Exited(3));
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------- C. output and exit code
 
 #[test]
 fn c1_stdout_only_exact_bytes() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "printf 'hi\\n'");
     assert_eq!(o.stdout, b"hi\n");
     assert_eq!(o.stderr, b"");
     assert_eq!(o.status, ExitStatus::Exited(0));
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c2_stderr_only_exact_bytes() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "echo oops >&2");
     assert_eq!(o.stderr, b"oops\n");
     assert_eq!(o.stdout, b"");
     assert_eq!(o.status, ExitStatus::Exited(0));
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c3_both_streams_are_separate_and_unmerged() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "echo on-out; echo on-err >&2");
     assert_eq!(o.stdout, b"on-out\n");
     assert_eq!(o.stderr, b"on-err\n");
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c4_exit_codes_preserved_exactly() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     for code in [0, 1, 42, 255] {
         let line = format!("exit {}", code);
         let o = run_sh(&root, "/home/work", &line);
@@ -352,12 +551,13 @@ fn c4_exit_codes_preserved_exactly() {
         // §I.4: against the shell itself, not a remembered number.
         assert_eq!(shell_exit_code(&line), code);
     }
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c5_exit_127_is_an_exit_code_not_a_runner_error() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let (p, a) = ("definitely-not-a-real-command-2b".to_string(), vec![]);
     let r = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default());
     // The runner cannot START a missing program; that is a Spawn refusal.
@@ -368,44 +568,48 @@ fn c5_exit_127_is_an_exit_code_not_a_runner_error() {
         o.status,
         ExitStatus::Exited(shell_exit_code("definitely-not-a-real-command-2b"))
     );
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c6_killed_by_a_signal_is_not_exit_0() {
     // The most important test in the file (with f1): a crash reported as
     // success is the worst outcome this phase can produce.
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "kill -9 $$");
     assert_eq!(o.status, ExitStatus::Signalled(9), "got {:?}", o.status);
     // Other signals are their own numbers, never folded into exit codes.
     let o2 = run_sh(&root, "/home/work", "kill -15 $$");
     assert_eq!(o2.status, ExitStatus::Signalled(15), "got {:?}", o2.status);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c7_empty_output_is_zero_bytes_on_both_streams_not_an_error() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "true");
     assert_eq!(o.stdout.len(), 0);
     assert_eq!(o.stderr.len(), 0);
     assert_eq!(o.status, ExitStatus::Exited(0));
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c8_no_trailing_newline_is_exactly_one_byte() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "printf x");
     assert_eq!(o.stdout, b"x");
     assert_eq!(o.stdout.len(), 1);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c9_all_256_byte_values_come_back_exactly() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut want: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
     // sh writes them via printf built from octal escapes — every byte
     // including NUL… except argv/pipes cannot carry NUL through sh's
@@ -421,12 +625,13 @@ fn c9_all_256_byte_values_come_back_exactly() {
     want.dedup(); // no-op; keep 0..=255 inclusive, exact order
     let want: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
     assert_eq!(o.stdout, want);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c10_arguments_survive_intact_spaces_quotes_dollar() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     // printf with EACH of these as one argv element: the runner is not a
     // quoting layer.
     let args: Vec<String> = vec![
@@ -447,12 +652,13 @@ fn c10_arguments_survive_intact_spaces_quotes_dollar() {
         out_text(&o),
         "[two words][has'quote\"and$dollar][  padded  ]"
     );
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn c11_order_within_a_stream_is_preserved() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(
         &root,
         "/home/work",
@@ -460,7 +666,6 @@ fn c11_order_within_a_stream_is_preserved() {
     );
     let want: String = (1..=100).map(|n| format!("{}\n", n)).collect();
     assert_eq!(out_text(&o), want);
-    cleanup(&root, &outside);
 }
 
 // ----------------------------------------------------- D. environment
@@ -471,7 +676,9 @@ fn d1_the_canary_is_absent_from_the_childs_environment() {
     // way the harness sets it before invoking the runner. If the child
     // inherited it, the command would print it.
     std::env::set_var("ATRIUM_2B_CANARY", "test-canary-value-2b");
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(
         &root,
         "/home/work",
@@ -479,13 +686,14 @@ fn d1_the_canary_is_absent_from_the_childs_environment() {
     );
     assert_eq!(out_text(&o).trim(), "canary=[ABSENT]");
     std::env::remove_var("ATRIUM_2B_CANARY");
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn d2_env_shows_only_the_runners_small_fixed_set() {
     std::env::set_var("ATRIUM_2B_CANARY", "still-set-during-d2");
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "env | sort");
     let text = out_text(&o);
     let names: Vec<String> = text
@@ -514,24 +722,26 @@ fn d2_env_shows_only_the_runners_small_fixed_set() {
     }
     assert!(!text.contains("ATRIUM_2B_CANARY"));
     std::env::remove_var("ATRIUM_2B_CANARY");
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn d3_path_is_set_and_usable() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "echo \"PATH=$PATH\"");
     assert_eq!(out_text(&o).trim(), format!("PATH={}", CHILD_PATH));
     // And usable: a bare name resolves through it (cwd `/`, so `home`
     // exists as a listing target).
     let o2 = run_sh(&root, "/", "ls home >/dev/null && echo resolved");
     assert_eq!(out_text(&o2).trim(), "resolved");
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn d4_home_points_inside_the_root() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     let o = run_sh(
         &root,
         "/home/work",
@@ -549,21 +759,23 @@ fn d4_home_points_inside_the_root() {
             .unwrap(),
         root.display().to_string()
     );
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn d5_tmpdir_points_inside_the_root() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     run_sh(&root, "/home/work", "touch \"$TMPDIR/tmpfile\"");
     assert!(root.join("tmpfile").exists());
     assert!(!outside.join("tmpfile").exists());
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn d6_the_environment_is_fixed_not_inherited() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let probe = "env | sort";
     let o1 = run_sh(&root, "/home/work", probe);
     std::env::set_var("ATRIUM_2B_JUNK", "junk-value");
@@ -571,14 +783,15 @@ fn d6_the_environment_is_fixed_not_inherited() {
     std::env::remove_var("ATRIUM_2B_JUNK");
     assert_eq!(o1.stdout, o2.stdout, "environment differed across runs");
     assert!(!out_text(&o2).contains("ATRIUM_2B_JUNK"));
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------------------------ E. stdin
 
 #[test]
 fn e1_and_e2_stdin_is_eof_immediately_and_empty() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let start = std::time::Instant::now();
     let o = run_sh(&root, "/home/work", "cat");
     assert!(
@@ -588,15 +801,15 @@ fn e1_and_e2_stdin_is_eof_immediately_and_empty() {
     assert_eq!(o.stdout.len(), 0);
     assert_eq!(o.stderr.len(), 0);
     assert_eq!(o.status, ExitStatus::Exited(0));
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn e3_a_command_waiting_for_input_does_not_hang_the_runner() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(&root, "/home/work", "read x; echo got:$x");
     assert_eq!(out_text(&o).trim(), "got:");
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------- F. cannot be hung/flooded
@@ -605,7 +818,9 @@ fn e3_a_command_waiting_for_input_does_not_hang_the_runner() {
 fn f1_and_f2_a_command_that_never_exits_is_stopped_and_gone() {
     // The second most important pair: timed-out means reported as a
     // timeout, and the child is reaped — never exit 0, never left running.
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.timeout = Duration::from_millis(400);
     let (p, a) = sh("while true; do :; done");
@@ -621,12 +836,13 @@ fn f1_and_f2_a_command_that_never_exits_is_stopped_and_gone() {
     // here we additionally prove the loop is dead by its wall time).
     let o2 = run_sh(&root, "/home/work", "echo after");
     assert_eq!(out_text(&o2).trim(), "after");
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn f2_no_orphan_process_left_behind() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.timeout = Duration::from_millis(300);
     // A marker sleep whose command line we can grep for afterwards.
@@ -647,12 +863,13 @@ fn f2_no_orphan_process_left_behind() {
         .filter(|l| l.contains(marker) && !l.contains("ps -eo"))
         .count();
     assert_eq!(still, 0, "orphan survived: {}", text);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn f3_flooding_stdout_is_capped_and_reported() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.max_output_bytes = 4096;
     let (p, a) = sh("i=0; while [ $i -lt 100000 ]; do echo line-$i; i=$((i+1)); done");
@@ -661,12 +878,13 @@ fn f3_flooding_stdout_is_capped_and_reported() {
     assert!(o.truncated_stdout, "truncation must be REPORTED");
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(!o.truncated_stderr);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn f4_flooding_stderr_is_capped_the_same_way() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.max_output_bytes = 4096;
     let (p, a) = sh("i=0; while [ $i -lt 100000 ]; do echo err-$i >&2; i=$((i+1)); done");
@@ -675,14 +893,15 @@ fn f4_flooding_stderr_is_capped_the_same_way() {
     assert!(o.truncated_stderr);
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(!o.truncated_stdout);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn f5_flooding_both_pipes_at_once_does_not_deadlock() {
     // The classic failure of a naive implementation and it looks exactly
     // like a hang: far more than a pipe buffer (64 KiB) on each stream.
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.max_output_bytes = 512 * 1024;
     opts.timeout = Duration::from_secs(20);
@@ -694,26 +913,28 @@ fn f5_flooding_both_pipes_at_once_does_not_deadlock() {
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(o.stdout.len() > 64 * 1024);
     assert!(o.stderr.len() > 64 * 1024);
-    cleanup(&root, &outside);
 }
 
 #[test]
 fn f6_a_flooder_that_then_exits_normally_keeps_its_exit_code() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.max_output_bytes = 1024;
     let (p, a) = sh("i=0; while [ $i -lt 50000 ]; do echo $i; i=$((i+1)); done; exit 7");
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();
     assert_eq!(o.status, ExitStatus::Exited(7));
     assert!(o.truncated_stdout);
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------------------------ J. boring
 
 #[test]
 fn j1_through_j7_ordinary_commands_simply_work() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
 
     // J.1
     let o = run(
@@ -760,8 +981,6 @@ fn j1_through_j7_ordinary_commands_simply_work() {
     let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).unwrap();
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(root.join("home/work/brand-new-dir/file.txt").exists());
-
-    cleanup(&root, &outside);
 }
 
 // ------------------------------------------------- N. the blind list's lines
@@ -782,7 +1001,9 @@ fn j1_through_j7_ordinary_commands_simply_work() {
 /// grandchild's lifetime", which is the property that matters.
 #[test]
 fn n8_a_survivor_holding_the_pipes_does_not_extend_the_run() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let (p, a) = (
         "sh".to_string(),
         vec![
@@ -811,7 +1032,6 @@ fn n8_a_survivor_holding_the_pipes_does_not_extend_the_run() {
     // oversight. Assert it is still there, so "no orphan" elsewhere in this
     // suite is never mistaken for "the runner cleans up daemons".
     let _ = o;
-    cleanup(&root, &outside);
 }
 
 /// §N.5 — the time limit must hold when the command ignores the polite signal
@@ -819,7 +1039,9 @@ fn n8_a_survivor_holding_the_pipes_does_not_extend_the_run() {
 /// only when the grandchild ended.
 #[test]
 fn n5_the_limit_holds_against_a_survivor_that_ignores_the_signal() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let (p, a) = (
         "sh".to_string(),
         vec![
@@ -841,14 +1063,15 @@ fn n5_the_limit_holds_against_a_survivor_that_ignores_the_signal() {
         "the deadline did not hold: took {:?}",
         elapsed
     );
-    cleanup(&root, &outside);
 }
 
 /// §N.10 — the output cap is exact at its boundary, in both directions, and
 /// the truncation flag is set only when bytes were actually dropped.
 #[test]
 fn n10_the_cap_is_exact_at_its_boundary() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     for (produced, want_kept, want_trunc) in
         [(9usize, 9usize, false), (10, 10, false), (11, 10, true)]
     {
@@ -871,7 +1094,6 @@ fn n10_the_cap_is_exact_at_its_boundary() {
             o.truncated_stdout
         );
     }
-    cleanup(&root, &outside);
 }
 
 /// §N.12 — a command's bytes must not be able to forge the runner's own
@@ -879,7 +1101,9 @@ fn n10_the_cap_is_exact_at_its_boundary() {
 /// identical to a status line must land in the payload and change nothing.
 #[test]
 fn n12_command_output_cannot_forge_the_status() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(
         &root,
         "/home/work",
@@ -891,27 +1115,29 @@ fn n12_command_output_cannot_forge_the_status() {
     // ...and the runner's own accounting is unaffected by it.
     assert_eq!(o.stdout.len(), 49);
     assert!(!o.truncated_stdout);
-    cleanup(&root, &outside);
 }
 
 /// §N.13 — the child's stdin is not a terminal, confirmed by the child.
 #[test]
 fn n13_the_childs_stdin_is_not_a_terminal() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let o = run_sh(
         &root,
         "/home/work",
         "if [ -t 0 ]; then echo TTY; else echo NOT-A-TTY; fi",
     );
     assert_eq!(out_text(&o).trim(), "NOT-A-TTY");
-    cleanup(&root, &outside);
 }
 
 /// §N.2/§N.3 — the program failing to start is its own refusal with its own
 /// reason, distinct from a bad cwd, and never reported as exit 127.
 #[test]
 fn n1_to_n4_the_program_failing_to_start_is_its_own_refusal() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     std::fs::write(root.join("home/work/notexec.txt"), b"x\n").unwrap();
     let mut perms = std::fs::metadata(root.join("home/work/notexec.txt"))
         .unwrap()
@@ -949,7 +1175,6 @@ fn n1_to_n4_the_program_failing_to_start_is_its_own_refusal() {
         "the three spawn refusals are not distinguishable: {:?}",
         reasons
     );
-    cleanup(&root, &outside);
 }
 
 /// §N.14–§N.16 — what reaches the program, exactly: the runner's own flag
@@ -957,15 +1182,17 @@ fn n1_to_n4_the_program_failing_to_start_is_its_own_refusal() {
 /// containing a path interpreted relative to the child's cwd.
 #[test]
 fn n14_to_n16_arguments_and_program_names_reach_the_program_untouched() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
     let script = root.join("home/work/argv.sh");
-    std::fs::write(
+    // Atomic-rename write: the exec'd path is never open for writing, so no other
+    // thread's fork can carry a write fd to it (issue #62, ETXTBSY). The previous
+    // shape — write, then set_permissions, then exec — left a window in which any
+    // fork in this process could inherit the fd and make the exec fail.
+    write_executable_script(
         &script,
         b"#!/bin/sh\nprintf 'argv-count=%s\\n' \"$#\"\nprintf 'arg1=[%s]\\n' \"$1\"\n",
-    )
-    .unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
 
     // N.14: the runner's own flag names are ordinary arguments here.
     let (p, a) = (
@@ -1016,15 +1243,15 @@ fn n14_to_n16_arguments_and_program_names_reach_the_program_untouched() {
         "got {:?}",
         out_text(&o)
     );
-
-    cleanup(&root, &outside);
 }
 
 /// §N.18 — the same cwd spelled with `//`, `./` and a trailing slash reaches
 /// the same directory: the runner passes the RESOLVED path, not the raw string.
 #[test]
 fn n18_odd_cwd_spellings_reach_the_same_directory() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let (p, a) = sh("touch norm.txt");
     let o = run(&root, &vp("/home//work/./"), &p, &a, &RunOptions::default()).expect("runs");
     assert_eq!(o.status, ExitStatus::Exited(0));
@@ -1032,7 +1259,6 @@ fn n18_odd_cwd_spellings_reach_the_same_directory() {
         root.join("home/work/norm.txt").exists(),
         "the file did not land in the normalised directory"
     );
-    cleanup(&root, &outside);
 }
 
 /// §H.1/§H.2 — **no refusal may name the sandbox's real location.**
@@ -1053,7 +1279,9 @@ fn n18_odd_cwd_spellings_reach_the_same_directory() {
 /// catch it, and `RunError`'s re-wording must be extended.
 #[test]
 fn n_disclosure_no_real_path_in_any_refusal() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let outside = f.outside.clone();
     let real_paths: Vec<&Path> = vec![&root, &outside];
 
     // Every refusing cwd, spanning each resolver rejection reason the runner
@@ -1101,7 +1329,6 @@ fn n_disclosure_no_real_path_in_any_refusal() {
             }
         }
     }
-    cleanup(&root, &outside);
 }
 
 // ------------------- M. behaviour the mutation run found untested (#22)
@@ -1141,7 +1368,9 @@ fn m2_virtual_path_displays_as_the_spelling_given() {
 #[cfg(target_os = "linux")]
 #[test]
 fn m3_a_timed_out_child_is_reaped_not_left_a_zombie() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     let mut opts = RunOptions::default();
     opts.timeout = Duration::from_millis(300);
     let (p, a) = sh("while true; do :; done");
@@ -1154,7 +1383,6 @@ fn m3_a_timed_out_child_is_reaped_not_left_a_zombie() {
         "the timed-out child was not reaped; unreaped pids: {:?}",
         children.trim()
     );
-    cleanup(&root, &outside);
 }
 
 /// The DEFAULT cap is 1 MiB, and it is what a caller who sets nothing gets.
@@ -1180,7 +1408,9 @@ fn m4_the_default_output_cap_is_one_mib() {
 /// stderr every time, not sometimes.
 #[test]
 fn m5_stderr_is_collected_even_when_stdout_finishes_first() {
-    let (root, outside, _t) = make_root();
+    let f = make_root();
+    let root = f.root.clone();
+    let _outside = f.outside.clone();
     // A surviving subshell closes ITS copy of stdout, keeps stderr open, and
     // writes to stderr 50 ms later (well inside READER_GRACE, 200 ms). The main
     // child closes its stdout and exits at once. So stdout's pipe has no writers
@@ -1200,5 +1430,4 @@ fn m5_stderr_is_collected_even_when_stdout_finishes_first() {
     );
     assert_eq!(o.stdout, b"", "stdout was closed by the child");
     assert_eq!(o.status, ExitStatus::Exited(0));
-    cleanup(&root, &outside);
 }
