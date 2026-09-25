@@ -562,3 +562,11 @@ build" is no longer current — the crate is `crates/watcher/` and the gate is
 `bash crates/watcher/hand-test-2d.sh`; see `STATUS.md` "Agent-reported". **2e is the next
 build** and the last gate before Phase 5. Five crates now exist: the four signed-off
 ones above plus `crates/watcher/`, built but **not yet signed off**.)*
+
+*(Updated 25 Sep 2026: **2d is signed off.** Muffin ran the gate on 25 Sep 2026 on the
+script repaired by topic #69's T6 and it passed — 16 lines, 0 failures, 0 outside
+touches, 0 root disappearances, 0 real-path leaks. The sign-off is in `STATUS.md`
+"Verified hands-on", and the phase entry has been moved up there. **2e is now the
+current build**, and it is the last gate before Phase 5. Five crates exist and all five
+are signed off: `crates/resolver/`, `crates/fileops/`, `crates/shell/`,
+`crates/snapshot/`, `crates/watcher/`.)*

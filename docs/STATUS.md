@@ -24,15 +24,24 @@ backup. **"Done" is now `scripts/check.sh` passing locally and the CI run on Git
 green for that commit** — not an agent's report. See `AGENT-RULES.md` §6 and "The
 repository" at the foot of this file.
 
-**Current phase: 2d — the filesystem watcher. BUILT, NOT SIGNED OFF.** The crate is
-`crates/watcher/` (binary `atrium-watcher`). It is agent-verified only — 42 tests,
-the hands-on harness 16/16 lines, three defects found and fixed with each fix proven
-load-bearing — and it sits in "Agent-reported, unverified" below. **Its entry must not
-be read as complete.** The gate is Muffin's, and it has not been run:
+**Current phase: 2d — the filesystem watcher. VERIFIED HANDS-ON by Muffin, 25 Sep
+2026. Signed off.** The crate is `crates/watcher/` (binary `atrium-watcher`). It sits
+in "Verified hands-on" below with what he ran and what he saw, and that entry was
+**moved up from "Agent-reported, unverified" by Muffin's instruction** — the move is
+his, per `AGENT-RULES.md` §10. **16 lines, 0 failures, 0 outside touches, 0 root
+disappearances, 0 real-path leaks.**
 
-```
-cd "/home/muffin/VibeCodeProjects/atrium/crates/watcher" && bash hand-test-2d.sh
-```
+**What was fixed before he ran it.** The script he ran was not the one the phase was
+built with. `hand-test-2d.sh` had been testing a binary **22 minutes older than the
+code** — it resolved `crates/watcher/target/debug/`, a path a cargo workspace never
+writes, and only worked because a stale artefact happened to sit there. Repaired in
+topic #69 (T6) to resolve the workspace-root binary and **refuse a stale one**, with
+the failure path demonstrated first. His line totals are unchanged from the
+agent-side run: 16/16.
+
+**Note.** Phase 2d's `.hermes/environment.json` blocker is gone —
+`crates/watcher/.hermes/environment.json` now exists (T6, topic #69), so `hermes
+verify` no longer needs `--skip-start` for this crate.
 
 **Phase 1b is signed off again (18 Sep 2026).** It was reopened on 18 Sep 2026 by
 its own property test finding a sandbox escape; the escape, the chain-hop ruling
@@ -40,16 +49,10 @@ and the gate extension that followed are merged, and Muffin re-ran the gate on
 merged `main` himself and reported `accepts: 53   rejects: 74` and
 `hand-test-1b: every line behaved as required`. Recorded under "Verified
 hands-on" above and in the closure note at the head of the 18 Sep 2026 entry
-below. **The phase that is now waiting on him is 2d, not 1b.**
+below.
 
-**Until that is run and he moves the entry up, Phase 2d is unfinished.** The one
-open blocker on it is not a test: `crates/watcher/.hermes/environment.json` was never
-written (the write was blocked and the approval timed out, which is not consent), so
-`hermes verify` needs `--skip-start` for this crate. One file to copy from
-`crates/snapshot/.hermes/environment.json`.
-
-**Next: Muffin's 2d gate above, then Phase 2e — strong confinement for `run
-commands`.** 2e is the last gate before Phase 5 (the agent loop) and is required
+**Next: Phase 2e — strong confinement for `run commands`.** 2e is the last gate
+before Phase 5 (the agent loop) and is required
 after 2d, not instead of it. See the 2e paragraph below.
 
 **Phase 2c — snapshot and restore. VERIFIED HANDS-ON by Muffin, 14 Sep 2026.
@@ -503,6 +506,60 @@ not move entries; the gate is his hands-on pass).
 required before Phase 5**, because 2b deliberately leaves a command able to reach
 the host. See the 2e entry below.
 
+### Phase 2d — the filesystem watcher (Muffin, 25 Sep 2026)
+
+**This is the Phase 2d sign-off. The gate is passed. Phase 2d is signed off.**
+
+**What Muffin ran:** `crates/watcher/hand-test-2d.sh`, from the repo root. The script
+resolves the binary at the workspace root and refuses to run a stale one (repaired in
+topic #69, T6 — before that fix it tested a binary 22 minutes older than the code).
+
+**What he reported, verbatim:**
+
+```
+lines run: 16   failures: 0
+outside touches: 0   root disappearances: 0   real-path leaks: 0
+hand-test-2d: every line behaved as required
+```
+
+**Recorded at Muffin's instruction and report of his own run** — the move from
+"Agent-reported, unverified" to here is his, per `AGENT-RULES.md` §10. The entry below
+(now marked superseded) is the agent-side build record.
+
+**What the four numbers mean, and why they are the four.** Three of the harness's
+checks are independent of what the program says about itself: the outside directory is
+fingerprinted before the run and after **every** line; host `/etc/passwd`'s checksum
+and mtime likewise; and no default-output line may contain the root's real path,
+checked as bytes against every line. `outside touches: 0` therefore means the watcher
+never reached outside the root, `root disappearances: 0` that it destroyed nothing,
+and `real-path leaks: 0` that the sandbox's real location was never printed. A green
+run means the program's own claims were checked **against** those, not taken on trust.
+
+**The three defects that were fixed before this sign-off**, each found by running
+something and each fix proven load-bearing by reintroducing the defect and watching a
+specific check fail:
+
+1. A watched subtree moved **out of** the root kept reporting, naming an in-root path —
+   a fabricated change. Fixed by re-deriving every path from the tree by inode.
+2. A populated subtree moved **into** the root was watched only at its top level, so
+   everything inside was invisible permanently. Found by the independent blind list.
+   Fixed by walking the moved-in subtree.
+3. The header line printed the root's real on-disk path — caught by this harness on its
+   first run as `!! REAL PATH LEAKED`. Fixed: the default output shows `/`.
+
+**One measured flake, fixed, with the honest limit.** A test failed 3 times in 22 suite
+runs, reporting a file modified where nothing wrote it. The spurious record arrived as
+`mask = 0x8` alone (`IN_CLOSE_WRITE`, no `IN_CREATE`, no `IN_MODIFY`); the mechanism is
+a handle opened and written before the watch and closed after it. Fixed by flushing the
+kernel queue at `start`. **The kernel offers no way to distinguish that close-write from
+a real one**, so the fix removes the events already in flight rather than the ambiguity
+itself — recorded as a limit, not claimed as neutral.
+
+**What he signed off, and what he did not.** He signed off that the watcher observes and
+reports inside the root, reaches nothing outside it, destroys nothing, and never prints
+the real path. He did **not** sign off any confinement of `run commands` — that is 2e,
+which this phase does not touch.
+
 ### Topic — mutation cleanup: resolver and fileops mutants (Muffin, 19 Sep 2026)
 
 **This is the topic's sign-off, and it is signed off hands-on by Muffin.**
@@ -803,9 +860,17 @@ written down. Needs a decision.
 
 ### Phase 2d — the filesystem watcher: built in-session by the parent, because the last three build children died at the cap (15 Sep 2026, Hermes session)
 
-**Read this entry as evidence of what was RUN, not as a pass.** Phase 2d is NOT
-signed off. The gate below is Muffin's to run. Full command-by-command evidence is
-in `phase-2d-evidence.txt`.
+> **SUPERSEDED 25 Sep 2026 — Phase 2d is SIGNED OFF.** Muffin ran the gate on the
+> repaired script and it passed: 16 lines, 0 failures, 0 outside touches, 0 root
+> disappearances, 0 real-path leaks. The sign-off entry is above, under "Verified
+> hands-on". **This entry is kept as the agent-side build record** — it is what the
+> phase was built and verified as, not the gate. It is no longer an open item, and
+> the command it names is no longer outstanding.
+
+**Read this entry as evidence of what was RUN, and as the build record — the pass
+itself is the sign-off entry above.** It records the agent-side verification the phase
+was built with; Muffin's hands-on gate on the repaired script has since passed. Full
+command-by-command evidence is in `phase-2d-evidence.txt`.
 
 **What it is.** A new crate `crates/watcher/` (binary `atrium-watcher`). It watches the
 environment root and reports what changed inside it, so the live view cannot go
@@ -2141,8 +2206,11 @@ lives and how "done" is decided.
 the CI actions target Node.js 20 which GitHub is retiring. Both are deferred
 deliberately — fixing either means changing crate source.
 
-**Still outstanding from before this:** Muffin's hands-on gate for Phase 2d,
-`bash crates/watcher/hand-test-2d.sh`.
+**No longer outstanding:** the Phase 2d hands-on gate,
+`bash crates/watcher/hand-test-2d.sh` — **run and passed by Muffin, 25 Sep 2026**
+(16 lines, 0 failures). Phase 2d is signed off; the entry is in "Verified hands-on".
+Superseded by topic #69's T6, which repaired the script (it had been testing a binary
+22 minutes older than the code) and made it refuse a stale one.
 
 ---
 
@@ -2180,6 +2248,9 @@ and the review step found real defects in both scripts and in the T6 and T7 chan
 cache-read** (5,947,510), with 135,892 new input and 105,608 output — about 3.9% new
 material. Full working in `~/.hermes/audit/21sep-token-split.md`.
 
-**Owed, and not done here:** Phase 2d's hands-on gate is still Muffin's, unchanged by
-this topic — `bash crates/watcher/hand-test-2d.sh`. T6 repaired the script that runs it
-and made it refuse a stale binary, but **running it is his signature, not this agent's.**
+**Phase 2d, resolved.** The hands-on gate recorded as owed at the end of this topic
+was **run by Muffin on 25 Sep 2026 and passed** — 16 lines, 0 failures, 0 outside
+touches, 0 root disappearances, 0 real-path leaks. T6 repaired the script that runs it
+and made it refuse a stale binary; running it was his signature, and he has given it.
+Phase 2d is signed off and its entry now sits in "Verified hands-on". **Next phase: 2e,
+strong confinement for `run commands`.**
