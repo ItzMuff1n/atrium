@@ -2143,3 +2143,43 @@ deliberately — fixing either means changing crate source.
 
 **Still outstanding from before this:** Muffin's hands-on gate for Phase 2d,
 `bash crates/watcher/hand-test-2d.sh`.
+
+---
+
+## Topic: Pipeline v2 (#69) — agent-reported entry, 25 Sep 2026
+
+**Appended by the topic run.** Seven tasks, all merged on `main` with `check.sh` green
+locally and CI green for every commit. The topic itself is one paragraph; the detail is
+in each PR.
+
+| Task | What landed | Merged as |
+|---|---|---|
+| T1 | Model switch: `delegation.model` and `auxiliary.goal_judge.*` → `glm-5.3-flash`; `goals.max_turns=40`; auditor cron job pinned. Config-only, no PR. | n/a |
+| T2 | `TOPICS.md` §2/§3 rewritten — **the Lead writes product code itself**; children are bounded report-producing jobs only. Added `docs/templates/child-brief.md`. | `6358748` (#70) |
+| T3 | `scripts/review-batch.py` + `TOPICS.md` §6b — one batched logic review before each PR, each finding answered with a failing test or a "not reproduced" note, max 2 rounds then park. | `ee5cd16` (#71) |
+| T4 | `scripts/goal-gate.sh` + `TOPICS.md` §11 — a `/goal` gate: exit 0 clear, 1 premature finish, 2 red `check` on main, 3 bad usage/unknown milestone. | `cfcb3ee` (#72) |
+| T5 | Audit findings #66/#67/#68 fixed in `~/.hermes/audit/` (its own repo, no remote). | `bddee5c` |
+| T6 | The four `hand-test-2*` scripts resolve their binary at the **workspace root**, and refuse a stale one. Stale `crates/*/target/` dirs deleted. | `f57a97e` (#73) |
+| T7 | Fixture hygiene: self-cleaning fixtures, stale-fixture collection, and the ETXTBSY race removed. Closes #59, #60, #62. | `9c711df` (#74) |
+
+**What changed in the working routine, in one paragraph.** `TOPICS.md` used to describe
+children doing the building. It now says the Lead writes the product code — in pieces of
+at most 200 lines, building after each, tests in the same commit — because the topic that
+prompted this one had builder children die at the iteration cap: 5.82M tokens for one
+commit, and one child reported a kill that had not happened. Children are now for
+bounded, report-producing work only. Two new scripts support that: `review-batch.py`
+(the batched pre-PR review) and `goal-gate.sh` (the gate that pauses a `/goal` loop when
+it is about to finish a topic prematurely).
+
+**Nothing in `TOPICS.md` is an intention.** Every step it describes was exercised in this
+topic and is backed by a merged commit: the Lead built `review-batch.py` and
+`goal-gate.sh` itself, both had their failure paths demonstrated before their passes,
+and the review step found real defects in both scripts and in the T6 and T7 changes.
+
+**The 21 Sep auditor run's tokens, measured.** 6,189,010 total: **96.1% was
+cache-read** (5,947,510), with 135,892 new input and 105,608 output — about 3.9% new
+material. Full working in `~/.hermes/audit/21sep-token-split.md`.
+
+**Owed, and not done here:** Phase 2d's hands-on gate is still Muffin's, unchanged by
+this topic — `bash crates/watcher/hand-test-2d.sh`. T6 repaired the script that runs it
+and made it refuse a stale binary, but **running it is his signature, not this agent's.**
