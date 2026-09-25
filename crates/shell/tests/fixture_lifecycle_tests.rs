@@ -168,10 +168,10 @@ fn sweep(prefix: &str, stale_after: Duration) -> usize {
             .and_then(|m| m.modified())
             .ok()
             .and_then(|m| now.duration_since(m).ok());
-        if matches!(age, Some(a) if a > stale_after) {
-            if std::fs::remove_dir_all(entry.path()).is_ok() {
-                removed += 1;
-            }
+        if matches!(age, Some(a) if a > stale_after)
+            && std::fs::remove_dir_all(entry.path()).is_ok()
+        {
+            removed += 1;
         }
     }
     removed
