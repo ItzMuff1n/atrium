@@ -15,12 +15,37 @@ set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${1:-/tmp/atrium-2a-root}"
 OUTSIDE="$(dirname "$ROOT")/atrium-2a-outside"
-BIN="$HERE/target/debug/atrium-fileops"
 
-if [ ! -x "$BIN" ]; then
-    echo "building..." >&2
-    (cd "$HERE" && cargo build >/dev/null 2>&1) || { echo "cargo build failed" >&2; exit 2; }
+# The binary lives in the WORKSPACE target dir, not the crate's.
+#
+# `cargo build` in a cargo workspace writes to the workspace root's target/debug,
+# whatever directory it is run from. The previous version used `$HERE/target/debug`
+# — crates/fileops/target/debug — which the build never writes. It only "worked"
+# because a stale binary from an earlier session sat there, so the `[ ! -x ]` guard
+# skipped building entirely and the pass ran against old code.
+# Observed 24 Sep 2026: the stale crates/watcher binary was 22 minutes older than
+# its own lib.rs while the script reported it as current. The stale per-crate
+# target/ dirs have since been deleted, which is what makes this a hard failure
+# rather than a silent one.
+# Resolve to the workspace root explicitly. (Same fix as hand-test-1b.sh, which was
+# repaired first, and hand-test-2d.sh.)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$REPO_ROOT/target/debug/atrium-fileops"
+
+# Rebuild when absent, or when any crate source is newer than the binary.
+NEED_BUILD=0
+[ -x "$BIN" ] || NEED_BUILD=1
+if [ -x "$BIN" ] && [ -n "$(find "$REPO_ROOT"/crates/fileops/src "$REPO_ROOT"/crates/fileops/tests "$REPO_ROOT"/crates/fileops/Cargo.toml -newer "$BIN" -print -quit 2>/dev/null)" ]; then
+    NEED_BUILD=1
 fi
+if [ "$NEED_BUILD" = 1 ]; then
+    echo "building (binary absent, or a crate source is newer than it)..." >&2
+    (cd "$REPO_ROOT" && cargo build -p atrium-fileops >/dev/null 2>&1) || { echo "cargo build failed" >&2; exit 2; }
+fi
+[ -x "$BIN" ] || { echo "no binary at $BIN after building" >&2; exit 2; }
+# Name the artefact under test, so a stale one is visible in the output.
+echo "binary under test: $BIN"
+echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256sum "$BIN" | cut -c1-16))"
 
 rm -rf "$ROOT" "$OUTSIDE"
 mkdir -p "$ROOT" "$OUTSIDE"

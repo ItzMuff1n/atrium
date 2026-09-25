@@ -1016,3 +1016,40 @@ root, or been deleted, is reported as `GONE … no longer inside the environment
 (deleted, or moved out)` — the watcher does **not** claim to know which, because the
 kernel does not say. `MOVE_SELF` on its own is treated as "this path is no longer
 known", never as "this is gone", because it arrives for an in-root rename too.
+
+---
+
+## Hand-test harness: the binary is the workspace-root artefact
+
+**Decision (25 Sep 2026, topic #69 T6).** Every `hand-test-2*.sh` resolves its
+binary as `$REPO_ROOT/target/debug/<bin>` — the workspace root, computed from the
+script's own location — and builds with `cargo build -p <crate>` from `$REPO_ROOT`.
+The scripts also print the binary's path, mtime and sha256 before running, so a
+stale artefact is visible in the output rather than silent.
+
+**Rejected: `$HERE/target/debug/<bin>`, the crate-relative path.** This is what
+`2a`, `2b`, `2c` and `2d` used, and it is what `hand-test-1b.sh` was already fixed
+away from. `cargo build` in a cargo workspace writes to the **workspace root's**
+`target/debug` whatever directory it runs from, so the crate-relative path is a
+location the build never writes.
+
+**Why it stayed hidden, measured.** The path worked only because a stale binary
+from an earlier session happened to sit there. Observed 25 Sep 2026:
+`crates/watcher/target/debug/atrium-watcher` was dated `2026-09-18 19:12:12`,
+while `crates/watcher/src/lib.rs` was `19:34:51` — the script was testing a binary
+22 minutes older than the code it claimed to test. Worse than testing nothing: it
+reported a verdict, and the verdict was about superseded code.
+
+**The mechanism, demonstrated rather than argued.** The crate-relative staleness
+check was itself correct — with a stale binary present, `find src tests -newer
+"$BIN"` correctly says "stale, rebuild". The rebuild then ran and wrote to the
+workspace root, leaving the crate-relative file untouched and still executable. So
+the failure was not "fails to notice staleness"; it was "notices, rebuilds to the
+wrong place, and runs the stale file anyway". A detector that only checked the
+staleness verdict would have proved nothing — the first version of this topic's own
+detector made exactly that mistake.
+
+**Consequence.** The stale `crates/*/target/` directories were deleted. That is the
+load-bearing part: with them gone the old scripts fail their `[ -x ]` check
+outright, so the defect cannot silently return. The path fix turns a silent wrong
+result into either a correct one or a loud failure.
