@@ -202,3 +202,99 @@ the user's". It means "the command starts with none of the user's *environment
 variables*". Kernel state inherited across a fork — keyrings, and whatever else a
 future audit finds — has to be severed on its own, one channel at a time, and only a
 probe shows which are open.
+
+
+## Sweep: inherited kernel state, six items (26 Sep 2026)
+
+Muffin asked for this after the keyring find, as one targeted sweep for the same
+class: **kernel state a forked child inherits that clearing the environment does
+not touch.** Every item below was probed BEFORE any fix, so "crosses" and "cannot
+cross" are measured rather than argued.
+
+### Item 2 — inherited descriptors: CROSSED, now fixed
+
+A descriptor is not a path, so the cage's view of the filesystem does not govern it.
+Measured: the embedding process opened fd 9 on a file outside the root and fd 8 on
+another (no `CLOEXEC`). From inside the cage:
+
+```
+/proc/self/fd/8 -> /home/muffin/atrium-sweep-outside/written-by-cage.txt
+/proc/self/fd/9 -> /home/muffin/atrium-sweep-outside/secret.txt
+read fd 9:  HOST-CONTENT-DO-NOT-LEAK      <- the host file's contents
+write fd 8: wrote OK                      <- 5 bytes landed on the host
+```
+
+Read and write to host paths with the boundary fully in place — as complete a bypass
+as the keyring was. Rust's own `File` sets `CLOEXEC`, so atrium's opens were safe;
+the leak is whatever the process *embedding* the runner happens to hold.
+
+**Fix.** Every descriptor at or above 3, except the cage's status descriptor, is
+closed in the child before it execs (`cage::close_all_but`), using `close_range(2)`
+with a per-descriptor fallback for kernels before 5.9. It **verifies** the closure
+with `fcntl(F_GETFD)` and refuses to exec if any survived — so this is a checked
+guarantee, not an intention. Measured after: only `0 1 2 3` remain, the read is
+empty, the write is refused, and a run with 100 descriptors inherited still shows
+`0 1 2 3`.
+
+### Item 1 — terminal injection (TIOCSTI / TIOCLINUX): precondition absent; injection itself UNPROVEN here
+
+`--new-session` is in the cage and the command holds **no terminal descriptor at
+all**: fd 0 is `/dev/null`, fd 1 and 2 are pipes, and `TIOCSTI` on each returns
+`Inappropriate ioctl for device`. There is nothing for the ioctl to aim at.
+
+Honest limit, and it is why this is not called proven: the injection itself could
+not be demonstrated on this machine. `/proc/sys/dev/tty/legacy_tiocsti` is **0**, so
+TIOCSTI requires `CAP_SYS_ADMIN`, which a caged process does not have (`CapEff` =
+`0000000000000000`). A control run with a real pty and **no cage** also failed to
+inject, so the probe cannot detect injection here and the caged result proves
+nothing on its own. What is asserted instead is the stronger structural fact: no
+terminal descriptor reaches the command, whether or not the ioctl would work. The
+detector behind that assertion was validated by running it uncaged under a pty,
+where it does report `fd0 IS-A-TTY`.
+
+### Item 3 — outward signals and ptrace: BLOCKED by the namespace
+
+With a host pid as the target, from inside the cage: `kill -0` → `No such process`,
+`kill -TERM` → `No such process`, `PTRACE_ATTACH` → `rc=-1 errno=3 No such
+process`. The private PID namespace means no host pid is addressable, and `/proc`
+lists 4-5 processes, all the cage's own. Worth recording that the host's
+`yama/ptrace_scope` is **0** — permissive — so the block here is the namespace, not
+a policy setting that could be relaxed elsewhere.
+
+### Item 4 — abstract unix sockets and D-Bus: BLOCKED
+
+`/run/user/1000` does not exist inside, so the session bus's socket path is not
+reachable (`No such file or directory`), and connecting to an abstract socket fails.
+The host has seven abstract sockets listening including `@/tmp/.X11-unix/X0` and
+`@/tmp/.ICE-unix/3010`. Note the limit on this evidence: the abstract-socket half
+was inferred from the network namespace being unshared rather than proven by a
+connection to a *live* host abstract socket — the harness connects to a name it
+constructs. The filesystem half is directly observed.
+
+### Item 5 — SysV/POSIX IPC and /dev/shm: BLOCKED
+
+`/dev/shm` inside is the cage's own (`drwxr-xr-x 2 ... 40`, empty). The host's
+marker file was not readable inside, and a write inside did not appear on the host.
+The private IPC namespace is visible in `ipcs -m`: the host lists two shared-memory
+segments (`shmid 0` and `1`, owned by `muffin`) and the cage lists **none**.
+`/dev/mqueue` does not exist inside.
+
+### Item 6 — resource limits: GAP, not fixed
+
+The limits inside are the host's own: `ulimit -u` = 127069, `ulimit -n` = 1048576,
+`ulimit -v` = unlimited, identical on both sides, and `/proc/self/cgroup` inside is
+`0::/` — the run is in no cgroup of its own. A bounded burst of 200 processes
+inside started 200 and they were all gone afterwards, which shows only that nothing
+lingers; it says nothing about what an unbounded fork would do. **A command that
+forks without limit can exhaust this machine.** Constraining it means cgroups,
+which is its own design, deliberately not built in this topic. Filed as
+[issue #89](https://github.com/ItzMuff1n/atrium/issues/89), parked.
+
+### What the six items have in common
+
+Five of the six are kernel state inherited across a fork — descriptors, a keyring,
+and, before they are unshared, namespaces. `--clearenv` closes exactly one channel:
+environment variables. Everything else has to be severed on its own, and only a
+probe shows which channels are open. Both real leaks found in this phase (the
+keyring, the descriptors) were found by probing rather than by reading, and both
+were missed by two independently written attack lists.

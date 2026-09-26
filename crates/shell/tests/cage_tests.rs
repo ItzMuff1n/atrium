@@ -21,6 +21,11 @@
 use std::path::{Path, PathBuf};
 
 use atrium_shell::cage::{CageError, SpawnReason};
+
+extern "C" {
+    #[link_name = "fcntl"]
+    fn libc_fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+}
 use atrium_shell::{run, ExitStatus, RunError, RunOptions, VirtualPath};
 
 /// A root on a filesystem not shared with `/home`, `/tmp` or `/`.
@@ -225,6 +230,108 @@ fn our_own_time_limit_is_reported_as_a_timeout_and_never_as_a_signal() {
             "a command that ended on its own must be reported as its own exit"
         ),
         Err(e) => panic!("unexpected error: {e}"),
+    }
+    cleanup(&root);
+}
+
+#[test]
+fn a_descriptor_the_embedder_holds_does_not_survive_into_the_cage() {
+    // Found by sweeping for the same class as the keyring leak (26 Sep 2026): a
+    // descriptor is KERNEL STATE inherited across the fork, so the cage's view of
+    // the filesystem does not govern it. Measured before the fix: with one
+    // descriptor open to a file outside the root, a caged command read that file
+    // and wrote to another one — read and write to host paths, boundary intact.
+    //
+    // This test opens the descriptors the way a careless embedder would (no
+    // CLOEXEC), then asks the cage's own /proc/self/fd what it can see. The
+    // independent half is the host file: it must be untouched afterwards.
+    use std::os::unix::io::AsRawFd;
+    let root = isolated_root("fds");
+    let outside =
+        std::path::PathBuf::from(format!("/dev/shm/atrium-2e-fds-out-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(&outside).expect("the outside directory");
+    let secret_path = outside.join("secret.txt");
+    let written_path = outside.join("written.txt");
+    std::fs::write(&secret_path, b"HOST-CONTENT-DO-NOT-LEAK\n").expect("the outside secret");
+
+    let read_fd = std::fs::File::open(&secret_path).expect("open the outside file");
+    let write_fd = std::fs::File::create(&written_path).expect("create the outside file");
+    // Clear CLOEXEC on both, exactly as a non-Rust embedder would leave them.
+    for f in [&read_fd, &write_fd] {
+        // SAFETY: `f` owns a live descriptor for this whole test.
+        unsafe {
+            libc_fcntl(f.as_raw_fd(), 2, 0); // F_SETFD, 0
+        }
+    }
+
+    let read_n = read_fd.as_raw_fd();
+    let write_n = write_fd.as_raw_fd();
+    if let Some(o) = run_caged(
+        &root,
+        "/home/work",
+        &format!(
+            "echo '--- fds:'; ls -1 /proc/self/fd | tr '\\n' ' '; echo; \
+             echo '--- read:'; cat <&{read_n} 2>&1 | head -1; \
+             echo '--- write:'; echo LEAKED >&{write_n} 2>&1 && echo WROTE || echo REFUSED"
+        ),
+    ) {
+        let printed = out_text(&o);
+        assert!(
+            !printed.contains("HOST-CONTENT-DO-NOT-LEAK"),
+            "a descriptor the embedder held let the cage READ a file outside the root: {printed:?}"
+        );
+        assert!(
+            !printed.contains("WROTE"),
+            "a descriptor the embedder held let the cage WRITE outside the root: {printed:?}"
+        );
+    }
+    // The host is the witness: nothing the cage did reached this file.
+    let after = std::fs::read(&written_path).expect("read the outside file back");
+    assert!(
+        after.is_empty(),
+        "the caged run wrote {} bytes through an inherited descriptor",
+        after.len()
+    );
+    drop(read_fd);
+    drop(write_fd);
+    let _ = std::fs::remove_dir_all(&outside);
+    cleanup(&root);
+}
+
+#[test]
+fn the_command_gets_no_terminal_so_there_is_nothing_to_inject_into() {
+    // Item 1 of the same sweep. TIOCSTI (and TIOCLINUX) push keystrokes into a
+    // TERMINAL's input queue; the attack requires the caged process to hold a
+    // descriptor that is a terminal. It holds none: stdin is /dev/null and
+    // stdout/stderr are pipes, and `--new-session` drops the controlling terminal.
+    //
+    // Stated honestly: the injection ITSELF could not be demonstrated on this
+    // machine — `/proc/sys/dev/tty/legacy_tiocsti` is 0, so TIOCSTI requires
+    // CAP_SYS_ADMIN, which a caged process does not have (CapEff measured 0). So
+    // this asserts the structural fact, which is the stronger one anyway: there is
+    // no terminal descriptor to aim at, whether or not the ioctl would work.
+    let root = isolated_root("tty");
+    if let Some(o) = run_caged(
+        &root,
+        "/home/work",
+        "for f in 0 1 2; do if [ -t \"$f\" ]; then echo \"fd$f IS-A-TTY\"; else echo \"fd$f notty\"; fi; done; echo \"fds: $(ls -1 /proc/self/fd | tr '\\n' ' ')\"; echo \"ctty: $(awk '{print $7}' /proc/self/stat)\"",
+    ) {
+        let printed = out_text(&o);
+        assert!(
+            !printed.contains("IS-A-TTY"),
+            "the command holds a terminal descriptor, which is the TIOCSTI precondition: {printed:?}"
+        );
+        // Field 7 of /proc/self/stat is the controlling terminal. Checked as a
+        // secondary fact only: MEASURED, that field reads 0 even for an UNCAGED
+        // command run under a pty by a harness, so it does not discriminate on its
+        // own. The load-bearing assertion is the one above, and the detector
+        // behind it was validated by running it uncaged under a pty, where it does
+        // report `fd0 IS-A-TTY`.
+        assert!(
+            printed.contains("ctty: 0"),
+            "the command has a controlling terminal: {printed:?}"
+        );
     }
     cleanup(&root);
 }

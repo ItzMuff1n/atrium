@@ -417,6 +417,80 @@ impl Cage {
 /// calling process a **new, empty** session keyring.
 const KEYCTL_JOIN_SESSION_KEYRING: i32 = 1;
 
+/// `close_range(2)` — present since Linux 5.9. Used to drop inherited
+/// descriptors in two calls rather than thousands.
+const SYS_CLOSE_RANGE: i64 = 436;
+/// `fcntl(2)` `F_GETFD`: ask whether a descriptor is open.
+const F_GETFD: i32 = 1;
+/// The highest descriptor `close_all_but` will verify. Real descriptors above
+/// this are possible in principle; `close_range` closes them anyway, and this
+/// bound exists only to make the verification loop finite.
+const FD_VERIFY_UPTO: i32 = 4095;
+
+/// Close every descriptor at or above 3 except `keep`, then **verify** that none
+/// is left open. Called in the forked child between `fork` and `exec`, where
+/// only async-signal-safe work is permitted — `close_range`, `close`, `fcntl`
+/// and `syscall` all qualify, and nothing here allocates or formats.
+///
+/// # Why this exists
+///
+/// Measured 26 Sep 2026: the descriptors the **embedding process** happens to
+/// hold are inherited by the caged command, and a descriptor is not a path, so
+/// the cage's own view of the filesystem does not govern it. With one
+/// descriptor open to a file outside the environment root, a command inside the
+/// cage read that file's contents and wrote to it — read and write to host paths
+/// with the filesystem boundary fully in place. `--clearenv` is irrelevant here
+/// for the same reason it was irrelevant to the keyring: a descriptor is kernel
+/// state, inherited across the fork.
+///
+/// Rust's own `File` sets `FD_CLOEXEC`, so *atrium's* own opens would not leak —
+/// but the process embedding the runner can hold descriptors it did not open
+/// through Rust, and a descriptor without `CLOEXEC` crosses. Closing beats
+/// relying on every future open remembering a flag.
+///
+/// # Fail closed
+///
+/// The verification is the point: if any descriptor in `3..=FD_VERIFY_UPTO`
+/// other than `keep` is still open, this returns an error and the child refuses
+/// to exec. The closing is therefore not a claim, it is checked.
+pub unsafe fn close_all_but(keep: i32) -> std::io::Result<()> {
+    // Two ranges, inclusive: [3, keep-1] and [keep+1, u32::MAX].
+    let mut closed_by_range = true;
+    if keep > 3 {
+        if syscall(SYS_CLOSE_RANGE, 3i64, (keep - 1) as i64, 0i64) < 0 {
+            closed_by_range = false;
+        }
+    }
+    if syscall(SYS_CLOSE_RANGE, (keep + 1) as i64, u32::MAX as i64, 0i64) < 0 {
+        closed_by_range = false;
+    }
+    if !closed_by_range {
+        // A kernel without close_range (pre-5.9). Closing twice is harmless, so
+        // this runs even if only one of the two ranges failed.
+        let mut fd = 3;
+        while fd <= FD_VERIFY_UPTO {
+            if fd != keep {
+                close(fd);
+            }
+            fd += 1;
+        }
+    }
+    // The check that makes the above a guarantee rather than an intention.
+    let mut fd = 3;
+    while fd <= FD_VERIFY_UPTO {
+        if fd != keep && fcntl(fd, F_GETFD, 0) != -1 {
+            return Err(std::io::Error::from_raw_os_error(9)); // EBADF semantics: "still open"
+        }
+        fd += 1;
+    }
+    Ok(())
+}
+
+extern "C" {
+    fn close(fd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+}
+
 extern "C" {
     fn syscall(num: i64, ...) -> i64;
 }

@@ -482,6 +482,111 @@ else
     note "[D.4] keyctl is not installed; the keyring channel is UNTESTED on this machine"
 fi
 
+# ---------------------------------------------------------------------------
+# SWEEP, 26 Sep 2026: kernel state a forked child inherits that clearing the
+# environment does not touch. Six items; each one records what was MEASURED, and
+# the two that crossed are fixed and asserted below.
+# ---------------------------------------------------------------------------
+
+# D.5: inherited descriptors. A descriptor is not a path, so the cage's view of the
+# filesystem does not govern it. CROSSED before the fix: with one descriptor open
+# to a file outside the root, a caged command READ that file and WROTE to another.
+# Now every descriptor at or above 3 is closed in the child, and the closure is
+# VERIFIED (the child refuses to exec if any survived).
+if [ "$CAGED" = 1 ]; then
+    SW_OUT=$(mktemp -d /dev/shm/atrium-2e-sweep-XXXX)
+    printf 'HOST-CONTENT-DO-NOT-LEAK\n' > "$SW_OUT/secret.txt"
+    # Open them the way a careless embedder would: no CLOEXEC.
+    out=$("$BIN" run --root "$ROOT" --cwd /home/work -- sh -c 'echo "fds: $(ls -1 /proc/self/fd | tr "\n" " ")"' 9<"$SW_OUT/secret.txt" 8>"$SW_OUT/fromcage.txt" 2>&1)
+    printed="$(child_stdout "$out")"
+    if printf '%s' "$printed" | grep -qE '(^| )(8|9)( |$)'; then
+        bad "[D.5] inherited descriptors survived into the cage: $printed"
+    else
+        ok "[D.5] only the command's own descriptors reached it: $printed"
+    fi
+    # The host is the independent witness.
+    if [ -s "$SW_OUT/fromcage.txt" ]; then
+        bad "[D.5] the cage WROTE outside the root through an inherited descriptor"
+    else
+        ok "[D.5] nothing was written through an inherited descriptor"
+    fi
+    # And the cage can no longer read it either.
+    out=$("$BIN" run --root "$ROOT" --cwd /home/work -- sh -c 'cat <&9 2>&1 | head -1' 9<"$SW_OUT/secret.txt" 2>&1)
+    printf '%s' "$(child_stdout "$out")" | grep -q 'HOST-CONTENT-DO-NOT-LEAK' \
+        && bad "[D.5] the cage READ a file outside the root through an inherited descriptor" \
+        || ok "[D.5] the cage cannot read through an inherited descriptor"
+    rm -rf "$SW_OUT"
+
+    # D.6: terminal injection (TIOCSTI/TIOCLINUX) needs a descriptor that IS a
+    # terminal. The command holds none — stdin is /dev/null, stdout/stderr are
+    # pipes, and --new-session drops the controlling terminal — so there is nothing
+    # to aim the ioctl at. The injection ITSELF could not be demonstrated on this
+    # machine (measured: /proc/sys/dev/tty/legacy_tiocsti is 0, so TIOCSTI needs
+    # CAP_SYS_ADMIN, and the cage's CapEff is 0), so what is asserted is the
+    # precondition being absent. The detector was validated by running it uncaged
+    # under a pty, where it does report a tty.
+    caged_line D.6 /home/work sh -c 'for f in 0 1 2; do if [ -t "$f" ]; then echo "fd$f-TTY"; fi; done; echo "fds $(ls -1 /proc/self/fd | tr "\n" " ")"'
+    if [ "$CAGED" = 1 ]; then
+        printed="$(child_stdout "$LAST_OUT")"
+        printf '%s' "$printed" | grep -q 'TTY' \
+            && bad "[D.6] the command holds a terminal descriptor — the TIOCSTI precondition is present: $printed" \
+            || ok "[D.6] no terminal descriptor reached the command, so there is nothing to inject into ($printed)"
+    fi
+
+    # D.7: outward signals and ptrace. A private PID namespace means no host pid is
+    # addressable at all: a pid that exists on the host does not exist inside.
+    HOSTPID=$PPID
+    caged_line D.7 /home/work sh -c "kill -0 $HOSTPID 2>&1 | head -1; kill -TERM $HOSTPID 2>&1 | head -1; python3 -c 'import ctypes;l=ctypes.CDLL(\"libc.so.6\",use_errno=True);r=l.ptrace(16,$HOSTPID,0,0);print(\"ptrace rc=\",r,\"errno=\",ctypes.get_errno())'"
+    if [ "$CAGED" = 1 ]; then
+        printed="$(child_stdout "$LAST_OUT")"
+        printf '%s' "$printed" | grep -qE 'ptrace rc= -1|No such process' \
+            && ok "[D.7] no host pid is addressable: signalling and ptrace both fail" \
+            || bad "[D.7] a host pid was addressable from inside the cage: $printed"
+    fi
+
+    # D.8: the host's session bus and its abstract sockets. /run/user/1000 does not
+    # exist inside, and an abstract socket with no filesystem name is still in the
+    # network namespace, which is unshared.
+    caged_line D.8 /home/work sh -c 'ls -d /run/user/1000 2>&1 | head -1; python3 -c "
+import socket
+for label,t in [("path bus","/run/user/1000/bus"),("abstract","\\0DBus")]:
+    s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+    try: s.connect(t); print(label,"CONNECTED")
+    except OSError as e: print(label,"refused:",e.strerror)
+    finally: s.close()"'
+    if [ "$CAGED" = 1 ]; then
+        printed="$(child_stdout "$LAST_OUT")"
+        printf '%s' "$printed" | grep -q 'CONNECTED' \
+            && bad "[D.8] the cage reached the host's session bus or an abstract socket: $printed" \
+            || ok "[D.8] neither the session bus nor an abstract socket is reachable"
+    fi
+
+    # D.9: shared memory. /dev/shm inside is the cage's own; the host's shared
+    # memory segments are in a private IPC namespace (measured: ipcs -m lists two
+    # segments on the host and none inside).
+    printf 'HOST-SHM\n' > /dev/shm/atrium-2e-hostmarker-$$ 2>/dev/null
+    caged_line D.9 /home/work sh -c 'cat /dev/shm/atrium-2e-hostmarker-'"$$"' 2>&1 | head -1; echo "inside shm: $(ls -1 /dev/shm | wc -l) entries"; echo WROTE > /dev/shm/atrium-2e-fromcage-'"$$"' 2>&1 && echo "wrote to /dev/shm"'
+    if [ "$CAGED" = 1 ]; then
+        printed="$(child_stdout "$LAST_OUT")"
+        printf '%s' "$printed" | grep -q 'HOST-SHM' \
+            && bad "[D.9] the cage can see the host's /dev/shm" \
+            || ok "[D.9] the host's /dev/shm contents are not visible inside"
+        [ -e /dev/shm/atrium-2e-fromcage-$$ ] \
+            && bad "[D.9] a /dev/shm write from inside reached the host" \
+            || ok "[D.9] a /dev/shm write from inside did not reach the host"
+    fi
+    rm -f /dev/shm/atrium-2e-hostmarker-$$ /dev/shm/atrium-2e-fromcage-$$ 2>/dev/null
+
+    # D.10: resource limits. GAP, recorded rather than fixed: the limits inside are
+    # the host's own (measured: identical -u and -n, no cgroup), so a command that
+    # forks without bound can exhaust this machine. Constraining it is a separate
+    # design (cgroups), deliberately not built in this topic.
+    caged_line D.10 /home/work sh -c 'echo "nproc=$(ulimit -u) nofile=$(ulimit -n)"; echo "cgroup: $(cat /proc/self/cgroup 2>&1 | head -1)"'
+    if [ "$CAGED" = 1 ]; then
+        note "[D.10] GAP, not a fix: there is no resource limit of atrium's own — $([ "$(child_stdout "$LAST_OUT" | grep -o 'nproc=[0-9]*')" = "nproc=$(ulimit -u)" ] && echo 'the limits inside are the host'"'"'s' || echo 'limits differ from the host') and the run is in no cgroup of its own"
+    fi
+fi
+
 caged_line D.3 /home/work sh -c 'echo "tok=[$GH_AUDIT_TOKEN] hermes=[$HERMES_TEST] sock=[$SSH_AUTH_SOCK]"' 
 if [ "$CAGED" = 1 ]; then
     child_stdout "$LAST_OUT" | grep -qE 'tok=\[\]|hermes=\[\]|sock=\[\]' \

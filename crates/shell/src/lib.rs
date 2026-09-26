@@ -488,6 +488,14 @@ pub fn run(
                 if fcntl(target, F_SETFD, 0) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }
+                // Drop every OTHER descriptor the embedding process happened to
+                // be holding. Measured 26 Sep 2026: a descriptor open to a file
+                // outside the environment root let a caged command read that
+                // file and write to it, with the filesystem boundary fully in
+                // place — a descriptor is not a path, so the cage's view of the
+                // filesystem does not govern it. This refuses rather than execs
+                // if any descriptor survived.
+                cage::close_all_but(target)?;
                 Ok(())
             });
         }
