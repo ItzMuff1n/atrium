@@ -64,6 +64,34 @@ pub const STATUS_FD: &str = "3";
 /// returns `Read-only file system` and nothing appears at the real `/usr`.
 pub const READ_ONLY_BINDS: [&str; 5] = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 
+/// Directories bound read-only **only when the host actually has them**.
+///
+/// `/etc/alternatives` is here, and Muffin's decision of 26 Sep 2026 (issue #93)
+/// is what put it here: on Debian-family hosts the standard tool names are not
+/// files in `/usr` at all but symlinks routed through `/etc/alternatives`, so
+/// without this bind a caged command cannot resolve a bare `awk` — measured on
+/// the GitHub runner, where 2e's own `C.4` failed for exactly that reason. His
+/// reasoning, recorded because it is the whole argument: it is **system routing
+/// configuration, like `/usr`, not host user data.**
+///
+/// That reverses what the cage said before this, and the reversal is deliberate
+/// rather than a drift. 2e originally treated the alternatives directory as host
+/// state the cage must not reach for, recorded it as a limit, and put the decision
+/// to Muffin; he decided to bind it. This is the one place the v1 "no host access"
+/// rule and a real host were reconciled by widening the mount list rather than by
+/// accepting the gap — and it is a widening of *routing*, not of user data: the
+/// entries it holds are symlinks into `/usr`, which the cage already binds.
+///
+/// **Why it is conditional, and why that is not a hole.** bubblewrap REFUSES to
+/// start at all when a `--ro-bind` source does not exist — measured:
+/// `bwrap: Can't find source path /nonexistent-dir-xyz: No such file or directory`,
+/// exit 1. An unconditional bind would therefore refuse **every command on every
+/// host without the directory**, turning a Debian-family fix into a total outage
+/// elsewhere. Skipping it there weakens nothing: if the host has no
+/// `/etc/alternatives`, then nothing is routed through it, so "not bound" already
+/// means "not there" — which is exactly requirement B's rule.
+pub const READ_ONLY_BINDS_IF_PRESENT: [&str; 1] = ["/etc/alternatives"];
+
 /// Why a program could not be started **inside** the cage — in atrium's own
 /// words, and never read out of the cage program's error text.
 ///
@@ -663,6 +691,18 @@ pub fn build(
             push(d);
         }
 
+        // Bound only when present -- see READ_ONLY_BINDS_IF_PRESENT. bubblewrap
+        // refuses to start on a missing source, so an unconditional bind of
+        // /etc/alternatives would refuse every command on a host that does not
+        // have it. Skipped there, "not bound" already means "not there".
+        for d in READ_ONLY_BINDS_IF_PRESENT {
+            if Path::new(d).exists() {
+                push("--ro-bind");
+                push(d);
+                push(d);
+            }
+        }
+
         // A fresh /proc and /dev: the processes the command can see are its own,
         // and no host device is reachable through /dev.
         push("--proc");
@@ -888,6 +928,65 @@ mod tests {
             Err(CageError::RootNotIsolated { .. }) => {}
             other => panic!("expected a refusal for a /tmp root, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_alternatives_bind_is_conditional_and_read_only() {
+        // Muffin's decision, 26 Sep 2026 (issue #91, closing #93): /etc/alternatives
+        // is bound read-only, because it is system routing configuration and without
+        // it a Debian-family host cannot resolve a bare `awk` inside the cage.
+        //
+        // What this test guards is the SHAPE rather than the host's layout, because
+        // a test that asserted "the bind is present" would fail on any host without
+        // /etc/alternatives -- and bubblewrap refuses to start at all on a missing
+        // bind source (measured: `Can't find source path`), so an unconditional bind
+        // would be an outage there rather than a degradation.
+        let root = Path::new("/run/user/1000");
+        if !root.exists() {
+            return;
+        }
+        let Ok(cage) = build(root, "/home/work", "/bin/echo", &["hi".to_string()]) else {
+            return;
+        };
+        let a = cage.args();
+        // Whatever the host has, every ro-bind is paired: --ro-bind <src> <dst> with
+        // src == dst, and the alternatives bind must never appear writable.
+        let mut i = 0;
+        let mut seen_alternatives = false;
+        while i < a.len() {
+            if a[i] == "--ro-bind" {
+                assert_eq!(
+                    a.get(i + 1),
+                    a.get(i + 2),
+                    "a ro-bind must bind a path onto itself"
+                );
+                if a.get(i + 1).map(String::as_str) == Some("/etc/alternatives") {
+                    seen_alternatives = true;
+                }
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        // The bind must be present exactly when the host has the directory -- which
+        // is the conditional, and the only thing that can differ between hosts.
+        assert_eq!(
+            seen_alternatives,
+            Path::new("/etc/alternatives").exists(),
+            "the /etc/alternatives ro-bind must be present iff the host has the directory"
+        );
+        // And it must never be bound WRITABLE. This looks for the specific pair
+        // `--bind /etc/alternatives`, not for the string appearing anywhere: the
+        // ro-bind above legitimately contains it as its source and destination, so a
+        // looser check trips on the very thing it is meant to allow. (The first draft
+        // of this test did exactly that and failed against a correct cage.)
+        let writable = a
+            .windows(2)
+            .any(|w| w[0] == "--bind" && w[1] == "/etc/alternatives");
+        assert!(
+            !writable,
+            "the alternatives directory must never be bound writable"
+        );
     }
 
     #[test]
