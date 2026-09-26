@@ -2400,3 +2400,89 @@ decision's exact time is not pinned — only that it was in force by 19:10.
 1. `docs/STATUS.md` (this entry), then `docs/BUILD-PLAN.md` §2e, then `docs/DECISIONS.md`'s 2e entry.
 2. `atrium-2e-review-26sep.md` — the full check of the briefing, the design-system assessment, and the argument for 2e before the design system.
 3. **Before planning 2e in detail**, the CI question is now **answered**: bwrap works on the runner behind one `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, proven end to end above. That gate is open.
+
+
+## 26 Sep 2026 — Phase 2e built: the cage, and the two 2b guarantees it degrades (Hermes session, `20260926_161007_a0461c`)
+
+Agent-reported entry, appended. The phase is **not signed off** and **not merged**.
+
+### Observed — the cage works
+
+Built in `crates/shell/src/cage.rs` and wired into `run()`. Every figure below was measured on
+this machine on 26 Sep 2026, not inferred:
+
+- `/etc/passwd` inside the cage: `No such file or directory` (the host file is 2,943 bytes).
+- `cd / && rm -rf` style destruction hits read-only system binds; no host path touched.
+- A write to the real `/tmp` from inside does **not** land on the host.
+- The child's environment is exactly the allowlist; fake `GH_AUDIT_TOKEN`, `HERMES_TEST` and
+  `SSH_AUTH_SOCK` set on the host do not appear.
+- `/usr` is read-only; `/home/muffin` is absent; the root's own `/home` is present.
+- The network is shut (`curl` cannot resolve; `getent` fails; `ping` not permitted).
+- The process list is private (3 processes, all ours).
+- A file created inside appears at the real environment root with its contents.
+- python3, git 2.55.0, awk and pipelines still run.
+
+`bash crates/shell/hand-test-2e.sh` → **30 lines, 0 failures, 26 cage lines measured**.
+Tests: `cage.rs` 6 unit + `cage_tests.rs` 12, all passing. The full suite is green
+(6 + 12 + 8 fixture + 50 shell + everything else) and `scripts/check.sh` passes.
+
+### Observed — the environment root must sit on its own filesystem
+
+`/dev/shm` (device 27) works; a root under `/tmp` (device 50) is **refused**, as is `/`, `/home`
+and the working directory. Because the root is its own device, a hard link across the boundary
+returns `Invalid cross-device link` — open item **L.4 is closed by construction**. `/dev/shm`
+was chosen because a tmpfs created inside the namespace dies with the namespace, so the
+environment would not persist between runs.
+
+### Observed — two guarantees Phase 2b was signed off on do not survive the cage
+
+**1. Spawn refusals.** 2b's N.1–N.4 want `REFUSE <cwd> — <reason>` with three distinguishable
+reasons. Under the cage all three produce `bwrap: execvp <prog>: …`, exit 1, and **nothing on
+stdout**, so N.1–N.3 fail and N.4 fails. The reasons remain separable in the text (62, 47 and
+39 bytes of stderr) but they are bubblewrap's words via the child's exit status, not atrium's
+`RunError::Spawn`. Nothing is reported as 127 — that part holds.
+
+**2. `pwd` reports the virtual path** (`/home/work`), not the real one, which breaks 2b's
+A.1/A.4/A.6/A.7. This is what `DESIGN.md` §3.1 wants, so the cage does not break a promise — it
+breaks a **2b assertion that encoded the opposite**, correct for an uncaged runner.
+
+Also: `TMPDIR` is absent from the child's environment (2b's D.2), and a killed child reports
+`timed-out` rather than exit 137 (2b's C.6).
+
+At 2b's default root (`/tmp`) the harness reports **70 failures of 77 lines**; with an isolated
+root, **10**. The isolation refusal is working as designed — the harness root is in the wrong place.
+
+### Not done — blocked on one decision
+
+The three ways forward are recorded in `DECISIONS.md` and were put to Muffin: **(A)** amend 2b's
+contract to the virtual path and bubblewrap's wording, **(B)** run 2b's own harness uncaged, or
+**(C)** make caging a per-call choice for that harness. **None chosen.** 2b is a signed-off phase
+and a later phase may not restate its evidence unilaterally, so the branch is unmerged and 2b is
+red until this is ruled on.
+
+Also not done: the PR, CI verification of the workflow, the 150M/75M budget approval, README for
+2e, and the closing `Your turn: Phase 2e` issue.
+
+### Changed
+
+- Branch **`feat/2e-cage-wip`**, four commits, pushed, **not merged**. `main` is untouched at
+  `b6e264c`.
+- `docs/DECISIONS.md` — a 2e section recording the `/dev/shm` resolution, both degradations, the
+  open decision, and the mount-order finding.
+- `docs/archive/attack-list-2e.md` (the author's own list, 35 KB) and
+  `docs/archive/attack-list-2e-blind.md` (the independent list and what running it found).
+- `.github/workflows/hand-tests.yml` — installs bubblewrap and runs the one-line sysctl, with a
+  line stating whether a cage is actually available before the scripts run.
+
+### Uncertain / not verified
+
+- **The CI workflow has not been run.** It is written and inspected; no CI evidence exists.
+- **The independent attack list found no defect** — 12 items, all run, results in
+  `attack-list-2e-blind.md`. One item (D.3) was a bad probe, not a hole: it hid `PATH`, but
+  `cage.rs` locates bubblewrap by absolute path on purpose, so nothing was hidden. A 40+ item
+  version is in flight.
+- **A defect was found in the author's own first-draft tests:** 10 of 11 passed against a
+  deliberately broken cage, because each accepted "refused" as a pass. Found by injection, fixed
+  so that a refusal now panics while bubblewrap works; the injected defect fails 8 of 11.
+- **Unmeasured:** whether the 2b regressions can be avoided rather than accepted (option B or C
+  would answer that).
