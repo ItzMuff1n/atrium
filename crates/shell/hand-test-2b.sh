@@ -1010,8 +1010,8 @@ if [ "$FAILS" -gt 0 ]; then
     exit 1
 fi
 if [ "$CAGED" = 1 ]; then
-    echo "hand-test-2b: every line behaved as required (the 5 §G lines show the hole 2e CLOSED)"
+    echo "hand-test-2b: every line behaved as required (the $HOLES §G lines show the hole 2e CLOSED)"
 else
-    echo "hand-test-2b: every line behaved as required (the 5 HOLE lines reached the host by design)"
+    echo "hand-test-2b: every line behaved as required (the $HOLES HOLE lines reached the host by design)"
 fi
 exit 0
