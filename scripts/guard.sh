@@ -758,10 +758,52 @@ if [ -z "$WF_CHANGED" ]; then
   sum "_No workflow changed._"
   say "guard: (d) no workflow changed."
 else
+  # (2) An added continue-on-error, always-true guard, or swallowed failure.
+  #
+  # ONE definition, used for both a changed workflow and a brand-new one. The
+  # two must not drift apart: if a new file were checked against different
+  # patterns than an edited one, "the guard checks workflows" would be true of
+  # one case and not the other, which is how issue #78 arose in the first place.
+  SWALLOW_RE='continue-on-error:[[:space:]]*true|if:[[:space:]]*true|if:[[:space:]]*\$\{\{[[:space:]]*true|\|\|[[:space:]]*true[[:space:]]*$|^\+[[:space:]]*exit 0[[:space:]]*$'
+
   for f in $WF_CHANGED; do
     if ! git cat-file -e "${MB}:$f" 2>/dev/null; then
-      sum ""
-      sum "- \`$f\` is new in this PR (no base version) -- no step removed."
+      # A NEW workflow file (issue #78).
+      #
+      # (1) cannot apply: there was no base, so no step can have been removed.
+      # (3) cannot apply either: with no old values there is nothing to loosen,
+      # and the loosened-timeout comparison below already skips itself for
+      # exactly that reason.
+      #
+      # (2) CAN apply, and this is the case that matters. A new workflow is the
+      # one artefact that can make a required check decorative while looking
+      # like it adds one -- the shape is indistinguishable from an honest new
+      # job unless the file's own lines are read. `continue` here (before the
+      # fix) skipped (2) as well, so such a file landed green.
+      #
+      # The diff against the merge base is the file's entire content as added
+      # lines, so the same detector runs here as on an edited workflow.
+      git diff -U0 "$MB" "$HEAD_SHA" -- "$f" >/tmp/guard-wf.diff 2>&1 || true
+      added_swallow="$(grep -E '^\+[^+]' /tmp/guard-wf.diff \
+          | grep -E "$SWALLOW_RE" \
+          || true)"
+      if [ -n "$added_swallow" ]; then
+        msg="workflow $f (new in this PR):
+  a failure-swallowing line was added:
+$(printf '%s' "$added_swallow" | sed 's/^/    /')"
+        guard_fail "workflows" "$msg"
+        sum ""
+        sum "**\`$f\`** (new in this PR)"
+        sum ""
+        sum "Failure-swallowing lines added:"
+        sum '```diff'
+        printf '%s\n' "$added_swallow" >>"${SUMMARY_FILE:-/dev/stdout}"
+        sum '```'
+      else
+        sum ""
+        sum "- \`$f\` is new in this PR (no base version) -- no step removed, and no failure-swallowing line added."
+        say "guard: (d) OK -- $f (new): no step removed, no failure-swallowing line added."
+      fi
       continue
     fi
     git diff -U0 "$MB" "$HEAD_SHA" -- "$f" >/tmp/guard-wf.diff 2>&1 || true
@@ -805,8 +847,10 @@ else
                               <(printf '%s\n' "$head_cmds" | grep .) || true)"
 
     # (2) An added continue-on-error, always-true guard, or swallowed failure.
+    # Same pattern as the new-file branch above: ONE definition, not two, so the
+    # two paths cannot drift apart.
     added_swallow="$(grep -E '^\+[^+]' /tmp/guard-wf.diff \
-        | grep -E 'continue-on-error:[[:space:]]*true|if:[[:space:]]*true|if:[[:space:]]*\$\{\{[[:space:]]*true|\|\|[[:space:]]*true[[:space:]]*$|^\+[[:space:]]*exit 0[[:space:]]*$' \
+        | grep -E "$SWALLOW_RE" \
         || true)"
 
     # (3) A loosened timeout or retry: a numeric value that went UP.
