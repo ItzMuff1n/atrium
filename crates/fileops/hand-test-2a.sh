@@ -67,10 +67,31 @@ printf 'sentinel\n' > "$OUTSIDE/sentinel.txt"
 printf 'keep\n' > "$OUTSIDE/sub/keep.txt"
 
 # --- Record before the run (J.1/J.2) ---------------------------------------
-fingerprint_dir() { # full sorted listing + per-entry checksums
-    (cd "$1" && ls -laR 2>/dev/null; \
-     for f in $(cd "$1" && ls -1RA 2>/dev/null | grep -v ':' | grep -v '^$'); do :; done; \
-     cksum "$1/sentinel.txt" "$1/sub/keep.txt" 2>/dev/null)
+fingerprint_dir() {
+    # The outside directory's OWN contents only: entry names at every level,
+    # per-entry metadata, and content checksums. Deliberately NOT `ls -laR`:
+    # that prints each directory's `..` entry, and $OUTSIDE sits directly under
+    # /tmp -- so the fingerprint included /tmp's own size and mtime, and any
+    # unrelated process creating or removing a file in /tmp changed it. The
+    # detector then reported OUTSIDE TOUCHED with nothing outside the root
+    # having been touched. Observed on a shared CI runner: two runs of the same
+    # workflow at the same commit gave `failures: 0` and `failures: 51`, and
+    # `hand-tests` is a required check. Reproduced directly -- 4 quiet runs at
+    # 0 failures, 4 runs with unrelated /tmp churn at 56, 10, 59 and 11. This
+    # is a narrowing to what the detector was always meant to measure, not a
+    # weakening: a real touch anywhere under $OUTSIDE still changes this.
+    # `hand-test-2b.sh` rejected `ls -laR` for the same reason and is the
+    # reference implementation; this mirrors it. Issue #83.
+    ( printf '%s\n' '--- entries'
+      (cd "$1" && find . -mindepth 1 -printf '%y %P\n' | sort)
+      printf '%s\n' '--- stat'
+      # Mode is in here deliberately. The old `ls -laR` fingerprint carried it
+      # in its permission column, and a chmod on a file outside the root is a
+      # real touch that must still be caught. Dropping it would have been a
+      # silent weakening while replacing the listing.
+      find "$1" -mindepth 1 -printf '%y %m %P %s %T@\n' | sort
+      printf '%s\n' '--- cksum'
+      cksum "$1/sentinel.txt" "$1/sub/keep.txt" 2>/dev/null )
 }
 OUT_BEFORE="$(fingerprint_dir "$OUTSIDE")"
 SENTINEL_BEFORE="$(cksum "$OUTSIDE/sentinel.txt")"

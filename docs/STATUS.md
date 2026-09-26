@@ -2254,3 +2254,149 @@ touches, 0 root disappearances, 0 real-path leaks. T6 repaired the script that r
 and made it refuse a stale binary; running it was his signature, and he has given it.
 Phase 2d is signed off and its entry now sits in "Verified hands-on". **Next phase: 2e,
 strong confinement for `run commands`.**
+
+---
+
+## 26 Sep 2026 — 2e feasibility in CI, the budget record, and a defect in a required check (Hermes session, `20260926_161007_a0461c`)
+
+**Agent-reported, unverified.** Appended per `AGENT-RULES.md` §10. Nothing in this entry has
+been moved to "Verified hands-on" — that move is Muffin's alone.
+
+**Session-start review, read-only.** A full line-by-line check of the briefing this session
+received is in **`/home/muffin/VibeCodeProjects/atrium-2e-review-26sep.md`** (outside the
+repo, deliberately). Headline: every claim in it was CONFIRMED against the disk, with two
+precision corrections — the mailbox is typically **under 7s**, not "about 20s" (six of seven
+logged exchanges; the 29.6s one created the session), and there are **two** reviewers on
+different models (`review-batch.py` = `glm-5.3-flash`; `review-pr.py` in CI = `glm-5.3`).
+
+### Observed — Phase 2e's state, and the hole, today
+
+- **No 2e code.** `crates/shell/src/lib.rs` contains no `bwrap`, `unshare`, `landlock`,
+  namespace or `chroot` call. Its own header says adding one "is out of scope" — which
+  contradicts `DECISIONS.md`, where strong confinement is a required phase. Reported in the
+  review document, not silently changed.
+- **No 2e attack list** (`docs/archive/attack-list-2e.md` does not exist; 1, 1b, 2a–2d all
+  have theirs), no branch, no issue.
+- **The hole is live.** `atrium-shell run --root … --cwd / -- cat /etc/passwd` → `OK
+  status=exit 0 stdout=2943 bytes` — the real host file (2,943 bytes on this machine).
+  `bash crates/shell/hand-test-2b.sh` reproduces `lines run: 78   failures: 0   holes
+  demonstrated (expected, 2e's): 5`.
+
+### Observed — can 2e be caged in CI? Yes, with a one-line sysctl
+
+Throwaway branch `probe/bwrap-userns`, one added workflow, run
+[36244899076](https://github.com/ItzMuff1n/atrium/actions/runs/36244899076) on
+`ubuntu-latest` (**Ubuntu 24.04.5, kernel 6.17.0-1022-azure**). **Branch and run deleted
+afterwards; `main` was never touched** (`41f567b` before and after).
+
+```
+kernel.apparmor_restrict_unprivileged_userns = 1        <- the blocker
+unshare -Urm true            -> rc=1  (unshare: write failed /proc/self/uid_map: Operation not permitted)
+bwrap functional test -> rc=1  (bwrap: setting up uid map: Permission denied)
+
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; echo rc_sysctl=$?
+rc_sysctl=0
+unshare -Urm true -> rc=0
+bwrap after sysctl -> rc=0   ("hello from inside the root")
+```
+
+**The 2e requirement, end to end, after the sysctl:**
+
+```
+--- 1. what the caged command sees at /        dev home lib lib64 proc usr
+--- 2. virtual path resolves to the root       in-root data
+--- 3. host /etc/passwd must NOT exist         cat: /etc/passwd: No such file or directory
+--- 4. write inside the root; try to leave     write-ok / cat: /tmp/e2e/secret.txt: No such file or directory
+--- 5. host side: did the write land in the root?   written
+--- 6. host side: outside sentinel untouched?       OUTSIDE SECRET
+--- 7. a real program runs                     2
+verdict: /etc/passwd from inside -> HOST-UNREACHABLE
+verdict: virtual root at / -> VIRTUAL-PATHS-OK
+```
+
+**Answers, for 2e's plan:** bubblewrap is **not** preinstalled (`apt-get install bubblewrap`
+→ 0.9.0, ~6s); unprivileged user namespaces **are blocked by default**; a **one-line
+`sudo sysctl` fixes it** and holds for the rest of the job; and with that, the requirement
+in `BUILD-PLAN.md` §2e is satisfiable in CI exactly as it is on this machine.
+
+**Also observed in that run, and undecided in the documents:** the network is **open** from
+inside the cage by default (`TCP to 1.1.1.1:443 OPEN`; `--unshare-net` → `Network is
+unreachable`), the host **process list** is visible (`ps -e` → `systemd`, `kthreadd`, …), and
+`HOME=/home/muffin USER=muffin` leak through bare bwrap. Which of those 2e closes is a
+decision it has not been given.
+
+### Observed — a real defect in the required `hand-tests` check → issue #83
+
+Found while reading that probe's sibling runs. Two runs of the **same workflow at the same
+commit** (`41f567b`): `main` at 12:39 **success** (`lines run: 64   failures: 0`); the probe
+branch at 13:21 **failure** (`failures: 35`, `hand-test-2a: 35 FAILED`).
+
+Cause: `fingerprint_dir()` in `crates/fileops/hand-test-2a.sh` (line 70) uses `ls -laR`,
+which prints each directory's `..` entry — and `$OUTSIDE` is `/tmp/atrium-2a-outside`, so
+its parent is **`/tmp`**. Anything else creating or removing a file in `/tmp` changes that
+line and the detector reports "outside touched".
+
+Reproduced through the real harness, 4 quiet runs vs 4 runs with unrelated `/tmp` churn:
+
+```
+QUIET:  failures: 0, 0, 0, 0
+CHURN:  failures: 56, 10, 59, 11
+```
+
+**False positive, by the harness's own independent checks:** every failure was `OUTSIDE
+TOUCHED`; `HOST PATH DISCLOSED`, `HOST /etc/passwd CHANGED`, `ROOT GONE`, `MUST EXIST
+MISSING` and `MUST NOT EXIST PRESENT` were all **zero**; and the sentinel (`3783831074 9`)
+and `/etc/passwd` printed identical before and after.
+
+**The repo already knows this and `2b` implements the fix** — `hand-test-2b.sh` line 76:
+*"Deliberately NOT `ls -laR`: that prints the `..` entry (the real /tmp) whose mtime changes
+whenever anything else in /tmp changes … and would make the detector fire on the designed
+hole instead of on a real escape."* Measured: `2b` is immune (8/8 runs, quiet and churn).
+`2c` (`tar --sort=name`), `2d` (`ls -A`) and `1b` are unaffected; **`2a` is the only
+remaining harness with this defect.** Filed as **#83**, with the fix scoped to Muffin —
+changing a gate's detector is not the agent's call (§5).
+
+### Changed — one commit on `main`, through a PR
+
+**`05bf4e0` — `docs/DECISIONS.md`: the Pipeline v2 budget raise, 60M → 300M** (PR #82,
+squash-merged). `check` **success**, `hand-tests` **success** for that commit.
+
+Recorded at Muffin's instruction. **The date is his and it is right; the ordering is worth
+noting** — the raise was **not** a response to the missed checkpoint:
+
+| when (IDT) | what |
+|---|---|
+| 24 Sep 22:11 | T3 merged, `ee5cd16` |
+| 25 Sep ~19:0x | 25M checkpoint found crossed; the miss self-reported |
+| 25 Sep 19:10 | the raise reached the session |
+| 25 Sep 21:48 | `Spend: 107.6M of 300M` first reported |
+
+**Honest limit, recorded in the entry:** the raise survives only as the `constraints:` line
+of a goal-continuation user message (session `20260924_212614_70af61`, 25 Sep 19:10:23 IDT).
+The originating chat message was not in this session and was not recoverable, so the
+decision's exact time is not pinned — only that it was in force by 19:10.
+
+### Changed — issues opened
+
+- **#83** — the `hand-test-2a` detector defect above. **No label**; it wants Muffin's scope call rather than the `needs-muffin` label's two meanings.
+- **#84** — *Design system → `docs/design/`: parked until Phase 6*, labelled **`parked`** at Muffin's instruction. Reason on the issue: the tokens are code for a Flutter app that does not exist yet, and 8 surfaces are deliberately undesigned. Checked before parking: `tokens.json` parses and `atrium_tokens.dart` matches it **62/62** across both themes; the artifact has **no `.ttf` files**, though `HOW-TO-USE.md` says to vendor them.
+- **Confirmed the goal gate reads the label:** `bash scripts/goal-gate.sh "Pipeline v2"` → `open issues: 0 (0 unparked, 0 parked)`, exit 0.
+
+### Not done
+
+- **2e was not started, planned, or scoped.** No attack list written, no crate touched, no branch. This session was review, a CI probe, one docs commit and two issues.
+- **Nothing moved between `STATUS.md`'s two sections.**
+- **The `hand-test-2a` fix was not applied** — deliberately (§4, §5). #83 describes it.
+
+### Uncertain / not verified
+
+- **Not verified:** whether the 13:21 CI failure was caused by the sibling `check` job specifically. The mechanism is proven by direct reproduction; the log does not name what churned `/tmp` in that run. Stated as such in #83.
+- **Not verified:** that the six `preview.html` components render as their READMEs describe — no preview was opened (part of why #84 says to check that at unpark).
+- **Not verified:** whether `bwrap` should be the mechanism versus `unshare` + bind mounts directly. Both work here; bwrap is a system binary invoked as a program, so probably not the `AGENT-RULES.md` §5 stop-and-ask, but **that reading is not settled** and should be settled explicitly in 2e's plan.
+- **Unmeasured:** the rate at which the `2a` flake fires on a real runner. Two CI data points plus reproduction; no census.
+
+### The next session should read, in this order
+
+1. `docs/STATUS.md` (this entry), then `docs/BUILD-PLAN.md` §2e, then `docs/DECISIONS.md`'s 2e entry.
+2. `atrium-2e-review-26sep.md` — the full check of the briefing, the design-system assessment, and the argument for 2e before the design system.
+3. **Before planning 2e in detail**, the CI question is now **answered**: bwrap works on the runner behind one `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, proven end to end above. That gate is open.
