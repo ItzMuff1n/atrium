@@ -377,6 +377,12 @@ echo
 
 # ---------------------------------------------------------------- cleanup + tally
 
+# TEMPORARY (throwaway PR): a deliberately failing line. Deleted before this
+# branch is finished with. It fails through the script's own fail() helper, so
+# the script still cleans up and still exits 1 -- the only thing it proves is
+# that GitHub refuses to merge a PR whose hand-tests job is red.
+if [ "${PROBE_NEVER_SET:-0}" = 1 ]; then ok "probe"; else fail "DELIBERATE PROBE FAILURE (throwaway branch)"; fi
+
 echo "=== cleanup ==="
 rm -rf "$ROOT" "$OUTSIDE" "$STAGE" 2>/dev/null
 echo "  throwaway directories removed"
