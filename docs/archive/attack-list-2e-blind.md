@@ -141,3 +141,64 @@ blocked on the 2b decision):
 
 Whichever is chosen, the test belongs in `cage_tests.rs` beside the `pwd` test: run
 `grep <root-basename> /proc/self/mountinfo` inside and assert no hit.
+
+
+## The channel every list here missed: the session keyring (26 Sep 2026) — FOUND, FIXED, TESTED
+
+Found by probing after an independent attack list spent its budget researching
+kernel keyrings and `open_by_handle_at`. Neither the author's list, the independent
+list, `attack-list-2b.md`, `hand-test-2e.sh` nor `hand-test-2b.sh` mentioned keyctl
+or a keyring once — measured, `grep -ci 'keyctl\|keyring'` returned 0 in all five.
+
+**What was measured, before any fix.** A secret was placed in the host shell's
+session keyring, and the cage was started from that shell:
+
+| from inside the cage | observed |
+|---|---|
+| `keyctl show` | lists the host's session keyring, same id (`882676938`) |
+| `keyctl print <host-key-id>` | **`SECRET-IN-SESSION`** |
+| `keyctl add user atrium-from-cage P @s` | **succeeded**; the host then saw the key |
+| `keyctl unlink <host-key-id> @s` | **succeeded**; the host's key was GONE and unreadable |
+
+So the boundary leaked **read, write and delete** — not a disclosure, an escape
+channel with the host's own credentials on it.
+
+**Why `--clearenv` could not have caught it.** A keyring is kernel state, not an
+environment variable. `lib.rs` gives the reason the environment is cleared at all —
+"the user's shell environment on this machine holds API keys — this is a security
+requirement, not tidiness" — and a forked child inherits a keyring the way it
+inherits a file descriptor. Clearing the variables closed one door and left this one
+open.
+
+**Scope.** Only the **session** keyring crosses. `@u` and `@us` are separate inside
+the cage (`keyctl print` on a key placed in the host's user keyring returns
+`Permission denied`, and `keyctl show @u` lists a different ring).
+
+**The fix.** The child enters a new, empty session keyring in `pre_exec`, before it
+becomes the cage: `cage::join_new_session_keyring()`, one `keyctl(2)` syscall with
+`KEYCTL_JOIN_SESSION_KEYRING`. Chosen over shelling out to the `keyctl` binary
+either inside the cage or in `pre_exec`, because a `PATH` lookup in `pre_exec` is
+both an allocation and an attacker-influenced resolution; and over `--unshare-user`,
+because entering a child user namespace needs the same `setgroups` privilege that
+`--unshare-all` already establishes here, with considerably more blast radius.
+
+**It fails closed.** `cage::keyring_is_severable()` forks a throwaway process that
+takes its own session keyring and reports the result, before anything is spawned. A
+machine that refuses is `CageError::KeyringNotSeverable` — a refusal for the whole
+run, because the alternative is a cage that reaches the user's keys.
+
+**Verified after the fix**, with the host as the independent witness: the host can
+still read its own key, the cage cannot read it by id or by name, the cage's write
+does not appear in the host's keyring, the host's key is not deleted, and the cage
+still runs python3, git and writes files. The regression test
+`the_hosts_session_keyring_does_not_cross_the_cage` was checked against the defect —
+with `join_new_session_keyring()` removed it fails with `THE HOST'S SESSION KEYRING
+CROSSED THE CAGE`, and `hand-test-2e.sh`'s new D.4 fails two of its three lines.
+
+## What this changes about the phase's claims
+
+`--clearenv` plus an allowlist does **not** mean "the command starts with nothing of
+the user's". It means "the command starts with none of the user's *environment
+variables*". Kernel state inherited across a fork — keyrings, and whatever else a
+future audit finds — has to be severed on its own, one channel at a time, and only a
+probe shows which are open.

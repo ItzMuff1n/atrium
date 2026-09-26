@@ -439,7 +439,50 @@ if [ "$CAGED" = 1 ]; then
         || bad "[D.2] the four variables are not as expected: $printed"
 fi
 
-caged_line D.3 /home/work sh -c 'echo "tok=[$GH_AUDIT_TOKEN] hermes=[$HERMES_TEST] sock=[$SSH_AUTH_SOCK]"'
+# D.4: the session keyring. Found by probing on 26 Sep 2026, after an independent
+# attack list pointed at keyrings and every list and harness written here had missed
+# it: `--clearenv` does not touch a keyring, because a keyring is KERNEL STATE
+# inherited by a forked child, not an environment variable. Measured before the fix:
+# from inside the cage, `keyctl print <host-key-id>` returned the host's secret,
+# `keyctl add user ... @s` succeeded (the host saw the key afterwards), and
+# `keyctl unlink <host-key> @s` DESTROYED the host's key — read, write and delete
+# across a boundary this phase calls closed.
+#
+# The check is the HOST's, not the cage's: the host looks at its own keyring.
+if command -v keyctl >/dev/null 2>&1; then
+    keyctl new_session >/dev/null 2>&1
+    KR_NAME="atrium-2e-harness-key-$$"
+    KR_SECRET="SECRET-MUST-NOT-CROSS-$$"
+    KR_ID="$(keyctl add user "$KR_NAME" "$KR_SECRET" @s 2>/dev/null)"
+    if [ -n "$KR_ID" ] && [ "$KR_ID" -gt 0 ] 2>/dev/null; then
+        # The caged command tries the three things that crossed before the fix:
+        # read the host's key by id, find it by name, and WRITE its own key in.
+        # Every judgement below is the HOST looking at its own keyring.
+        FROM_CAGE="atrium-2e-from-cage-$$"
+        caged_line D.4 /home/work sh -c "keyctl print $KR_ID 2>&1 | head -1; keyctl search @s user $KR_NAME 2>&1 | head -1; keyctl add user $FROM_CAGE POLLUTED @s 2>&1"
+        if [ "$CAGED" = 1 ]; then
+            printed="$(child_stdout "$LAST_OUT")"
+            printf '%s' "$printed" | grep -q "$KR_SECRET" \
+                && bad "[D.4] THE HOST'S SESSION KEYRING CROSSED THE CAGE (the secret was readable)" \
+                || ok "[D.4] the host's session keyring is not readable inside the cage"
+            host_view="$(keyctl show 2>/dev/null)"
+            printf '%s' "$host_view" | grep -q "$FROM_CAGE" \
+                && bad "[D.4] the caged run WROTE a key into the host's session keyring" \
+                || ok "[D.4] nothing written inside reached the host's keyring"
+            after="$(keyctl print "$KR_ID" 2>/dev/null)"
+            [ "$after" = "$KR_SECRET" ] \
+                && ok "[D.4] the host's own key survived the caged run (not deleted)" \
+                || bad "[D.4] the caged run altered or destroyed the host's key"
+        fi
+        keyctl unlink "$KR_ID" @s >/dev/null 2>&1
+    else
+        note "[D.4] could not place a key in the session keyring; the channel is untested here"
+    fi
+else
+    note "[D.4] keyctl is not installed; the keyring channel is UNTESTED on this machine"
+fi
+
+caged_line D.3 /home/work sh -c 'echo "tok=[$GH_AUDIT_TOKEN] hermes=[$HERMES_TEST] sock=[$SSH_AUTH_SOCK]"' 
 if [ "$CAGED" = 1 ]; then
     child_stdout "$LAST_OUT" | grep -qE 'tok=\[\]|hermes=\[\]|sock=\[\]' \
         && child_stdout "$LAST_OUT" | grep -qv 'MUST-NOT-LEAK' \

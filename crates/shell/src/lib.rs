@@ -472,6 +472,13 @@ pub fn run(
         // qualify. Nothing here allocates, locks or formats.
         unsafe {
             cmd.pre_exec(move || {
+                // Sever the keyring inheritance FIRST, before anything else can
+                // fail: the host's session keyring is otherwise reachable from
+                // inside the cage, and no clearing of the environment touches it
+                // (measured 26 Sep 2026 — read, write AND unlink all crossed).
+                // This runs between fork and exec, so it must stay
+                // async-signal-safe.
+                cage::join_new_session_keyring()?;
                 if dup2(raw, target) == -1 {
                     return Err(std::io::Error::last_os_error());
                 }

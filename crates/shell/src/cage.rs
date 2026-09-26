@@ -163,6 +163,14 @@ pub enum CageError {
     },
     /// The root path could not be examined at all.
     RootUnreadable { reason: String },
+    /// The environment's filesystem is closed, but a channel that carries
+    /// **credentials** would still cross it, and this machine will not let that
+    /// be severed. Refused rather than caged, because a cage that leaks the
+    /// user's keys is not the guarantee this phase makes.
+    ///
+    /// See `keyring_is_severable`: the inheritance is a kernel keyring, which no
+    /// amount of clearing the environment can touch.
+    KeyringNotSeverable { reason: String },
 }
 
 impl std::fmt::Display for CageError {
@@ -195,6 +203,14 @@ impl std::fmt::Display for CageError {
             CageError::RootUnreadable { reason } => write!(
                 f,
                 "refused: the environment could not be examined, so the command was NOT run ({reason})."
+            ),
+            CageError::KeyringNotSeverable { .. } => write!(
+                f,
+                "refused: this machine will not let the session keyring be replaced for the command, \
+                 so the keys the user's own session holds would stay reachable from inside the \
+                 environment. The command was NOT run.\n\
+                 Clearing the environment does not touch a keyring: it is kernel state, not a \
+                 variable, and it is inherited across the cage boundary (measured 26 Sep 2026)."
             ),
         }
     }
@@ -397,6 +413,99 @@ impl Cage {
     }
 }
 
+/// `KEYCTL_JOIN_SESSION_KEYRING`, the `keyctl(2)` operation that gives the
+/// calling process a **new, empty** session keyring.
+const KEYCTL_JOIN_SESSION_KEYRING: i32 = 1;
+
+extern "C" {
+    fn syscall(num: i64, ...) -> i64;
+}
+
+/// The `keyctl` syscall number on x86_64 Linux.
+const SYS_KEYCTL: i64 = 250;
+
+/// Give this process a new, empty session keyring. Called in the forked child
+/// between `fork` and `exec`, where only async-signal-safe work is permitted —
+/// one `syscall` qualifies, and nothing here allocates or formats.
+///
+/// # Why this exists
+///
+/// Measured 26 Sep 2026: the host's **session keyring crosses the cage**. From
+/// inside, `keyctl print <host-key-id>` returned the host's secret, `keyctl add
+/// user … @s` succeeded (the host saw the new key afterwards), and
+/// `keyctl unlink <host-key> @s` **destroyed the host's key** — read, write and
+/// delete across a boundary this phase calls closed. `--clearenv` cannot touch
+/// it: a keyring is kernel state, not an environment variable, and a keyring is
+/// inherited by the forked child exactly as file descriptors are.
+///
+/// This is the channel the project's own reasoning about the environment was
+/// pointing at — "the user's shell environment on this machine holds API keys —
+/// this is a security requirement, not tidiness" (`lib.rs`). Clearing variables
+/// did not close it.
+///
+/// # Safety
+///
+/// One syscall with a constant operation and a null argument. It runs between
+/// `fork` and `exec`, so it must not allocate, lock or format — it does none of
+/// those.
+pub unsafe fn join_new_session_keyring() -> std::io::Result<()> {
+    // A null name means "unnamed, not shared with any other process", which is
+    // what is wanted: a fresh ring that nothing outside can reach by name.
+    let rc = syscall(SYS_KEYCTL, KEYCTL_JOIN_SESSION_KEYRING as i64, 0 as i64);
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Can this machine sever the keyring inheritance?
+///
+/// Probed by doing it for real, in the only process where it is safe to try: a
+/// throwaway `fork` that joins a new session keyring and exits. A machine that
+/// refuses (seccomp, a hardened kernel) is a **refusal for the whole phase**,
+/// because the alternative is a cage that reaches the user's keys.
+pub fn keyring_is_severable() -> Result<(), CageError> {
+    // SAFETY: the child performs one async-signal-safe syscall and `_exit`s; it
+    // never returns into the parent's Rust code. The parent waits below.
+    let pid = unsafe { fork() };
+    if pid < 0 {
+        return Err(CageError::KeyringNotSeverable {
+            reason: std::io::Error::last_os_error().to_string(),
+        });
+    }
+    if pid == 0 {
+        let rc = unsafe { join_new_session_keyring() };
+        // 0 = it worked, 1 = it did not. Never returns.
+        unsafe { _exit(if rc.is_ok() { 0 } else { 1 }) };
+    }
+    let mut wstatus: i32 = 0;
+    // SAFETY: `pid` is the child just created and `wstatus` is a live local.
+    let waited = unsafe { waitpid(pid, &mut wstatus, 0) };
+    if waited < 0 {
+        return Err(CageError::KeyringNotSeverable {
+            reason: std::io::Error::last_os_error().to_string(),
+        });
+    }
+    // WIFEXITED && WEXITSTATUS == 0
+    let exited_normally = (wstatus & 0x7f) == 0;
+    let code = (wstatus >> 8) & 0xff;
+    if exited_normally && code == 0 {
+        Ok(())
+    } else {
+        Err(CageError::KeyringNotSeverable {
+            reason: format!(
+                "a trial process could not take its own session keyring (wait status {wstatus:#x})"
+            ),
+        })
+    }
+}
+
+extern "C" {
+    fn fork() -> i32;
+    fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
+    fn _exit(code: i32) -> !;
+}
+
 /// Build the cage for one command.
 ///
 /// `root` is the **real** host path of the environment root — the only place in
@@ -416,6 +525,11 @@ pub fn build(
 ) -> Result<Cage, CageError> {
     let cage_program = find_cage_program()?;
     check_root_isolated(root)?;
+    // Second requirement, found by probing on 26 Sep 2026: the filesystem being
+    // closed is not enough if a credential channel still crosses. Checked here,
+    // before anything is spawned, so a machine that cannot sever it refuses
+    // rather than running a command that can read the user's keys.
+    keyring_is_severable()?;
 
     let mut a: Vec<String> = Vec::new();
     {
@@ -731,6 +845,9 @@ mod tests {
             },
             CageError::RootUnreadable {
                 reason: "no such file".to_string(),
+            },
+            CageError::KeyringNotSeverable {
+                reason: "a trial process could not take its own session keyring".to_string(),
             },
         ];
         for m in msgs {

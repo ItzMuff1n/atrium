@@ -230,6 +230,78 @@ fn our_own_time_limit_is_reported_as_a_timeout_and_never_as_a_signal() {
 }
 
 #[test]
+fn the_hosts_session_keyring_does_not_cross_the_cage() {
+    // Found by probing on 26 Sep 2026, after an independent attack list pointed
+    // at keyrings: the host's session keyring crossed the cage. From inside,
+    // `keyctl print <host-key-id>` returned the host's secret, `keyctl add … @s`
+    // succeeded (the host saw the key afterwards), and `keyctl unlink <host-key>
+    // @s` DESTROYED the host's key — read, write and delete across a boundary this
+    // phase calls closed.
+    //
+    // No amount of `--clearenv` touches it: a keyring is kernel state, not a
+    // variable, and a keyring is inherited by a forked child exactly as file
+    // descriptors are. The fix gives the child its own empty session keyring in
+    // `pre_exec`, and this test is what keeps it there.
+    //
+    // The host is the independent witness: it checks its own keyring afterwards,
+    // not anything the cage says about itself.
+    use std::process::Command;
+    if Command::new("keyctl").arg("show").output().is_err() {
+        return; // no keyctl on this machine: the vector cannot be exercised here
+    }
+    let root = isolated_root("keyring");
+    let name = format!("atrium-2e-key-{}", std::process::id());
+    let secret = "SECRET-MUST-NOT-CROSS-9f2c";
+    let added = Command::new("keyctl")
+        .args(["add", "user", &name, secret, "@s"])
+        .output()
+        .expect("run keyctl add");
+    let id = String::from_utf8_lossy(&added.stdout).trim().to_string();
+    if id.is_empty() || id.parse::<i64>().is_err() {
+        cleanup(&root);
+        return; // could not establish the fixture; do not assert on nothing
+    }
+
+    // By id, and by name: neither may reveal the secret.
+    if let Some(o) = run_caged(
+        &root,
+        "/home/work",
+        &format!("keyctl print {id} 2>&1 | head -1"),
+    ) {
+        let printed = out_text(&o);
+        assert!(
+            !printed.contains(secret),
+            "THE HOST'S SESSION KEYRING CROSSED THE CAGE: {printed:?}"
+        );
+    }
+    if let Some(o) = run_caged(
+        &root,
+        "/home/work",
+        &format!("keyctl search @s user {name} 2>&1 | head -1"),
+    ) {
+        let printed = out_text(&o);
+        assert!(
+            !printed.contains(&id),
+            "the host's key is reachable BY NAME inside the cage: {printed:?}"
+        );
+    }
+
+    // The independent check: the host's own keyring is untouched.
+    let after = Command::new("keyctl")
+        .args(["print", &id])
+        .output()
+        .expect("run keyctl print on the host");
+    assert_eq!(
+        String::from_utf8_lossy(&after.stdout).trim(),
+        secret,
+        "the host's own key was altered or removed by a caged run"
+    );
+
+    let _ = Command::new("keyctl").args(["unlink", &id, "@s"]).output();
+    cleanup(&root);
+}
+
+#[test]
 fn tmpdir_points_inside_the_environment_and_nowhere_else() {
     // 2b's D.2/D.5, which the cage has to keep: a program is given a temporary
     // directory, and it is the cage's OWN private /tmp — so a temp file is
