@@ -25,6 +25,10 @@
 #   (d) WORKFLOWS (.github/workflows/). A deleted step, an added
 #       `continue-on-error` / always-true exit, or a loosened timeout or retry.
 #   (e) THE GATES THEMSELVES (scripts/check.sh, scripts/guard.sh). A removed step.
+#   (f) THE GOAL GATE (scripts/goal-gate.sh). A load-bearing mechanism removed --
+#       the spend limit's option, its exit code, its comparison, or the session
+#       lookup it measures with. See §6b for why this is a token list and not the
+#       step-label comparison (e) uses.
 #
 # ## The one escape hatch
 #
@@ -42,6 +46,11 @@
 #   everything. A `GUARD-OVERRIDE:` line naming no recognised category waives
 #   NOTHING and is reported as malformed: failing closed, because the dangerous
 #   reading of a typo is that it silently disabled the guard.
+#
+#   ADDED 26 Sep 2026: `goal-gate` is now a category. It covers §6b, the check on
+#   scripts/goal-gate.sh. The category name is deliberately the script's own name
+#   rather than folded into `gates`, so a PR that waives the new check is visible
+#   as having done so instead of hiding inside a broader one.
 #
 # ## WHAT THIS DOES NOT CATCH -- stated plainly, because a guard that overstates
 # ## itself is worse than no guard
@@ -92,7 +101,7 @@ sum() {
 # ---------------------------------------------------------------------------
 # Overrides. Parsed once, from the PR body.
 # ---------------------------------------------------------------------------
-CATEGORIES="hand-tests fuzz-oracle mutants-toml workflows gates"
+CATEGORIES="hand-tests fuzz-oracle mutants-toml workflows gates goal-gate"
 declare -A OVERRIDES=()
 
 pr_body() {
@@ -1022,6 +1031,102 @@ $(printf '%s' "$removed_cats" | sed 's/^/    /')"
       sum "- \`$f\`: no step removed."
     fi
   done
+fi
+
+# ---------------------------------------------------------------------------
+# 6b. (f) The goal gate -- scripts/goal-gate.sh.
+#
+# WHY THIS IS NOT SECTION (e). (e) compares STEP LABELS: `step "..."` / `die "..."`
+# lines and `cargo ...` invocations, between base and head. goal-gate.sh has NONE of
+# those, so adding it to (e)'s file list would produce a check that APPEARS to
+# protect the file while comparing two empty sets -- a vacuous green, which is the
+# exact failure this file's own header warns about. Measured 26 Sep 2026 before
+# writing this: the script contains no `step`/`die`/`cargo` line at all.
+#
+# SO THE DETECTOR IS A TOKEN LIST, and its shape follows from what the file IS. It
+# is a goal gate: the thing worth protecting is that its stop conditions still
+# exist and still fire. Each token below is load-bearing, and a token that existed
+# at the merge base and is gone at head means a mechanism was removed rather than
+# the file reworded. Tokens are matched as fixed strings with `grep -F`, never as
+# regexes -- a regex here would quietly match something else after an edit.
+#
+# WHAT IT DOES NOT CATCH, stated because a guard that overstates itself is worse
+# than no guard:
+#   - a token that is PRESENT but no longer reachable (moved after an `exit 0`, or
+#     behind a condition that is now always false). This is the text/behaviour gap
+#     that applies to every check in this file.
+#   - a token present in a COMMENT. `grep -F` matches comments too, so deleting the
+#     code while leaving the comment passes. Deliberately not fixed: stripping
+#     comments reliably is a shell parser, and a wrong one would fail open.
+#   - a NEW mechanism added and then removed within the same PR (no base version,
+#     nothing to compare).
+#   - the check is on THIS FILE's text only. Nothing here says the spend limit
+#     measures the right thing -- that is what its own test suite is for.
+# ---------------------------------------------------------------------------
+sum ""
+sum "## (f) The goal gate"
+say ""
+say "=== (f) scripts/goal-gate.sh vs base ==="
+
+GOALGATE_FILE="scripts/goal-gate.sh"
+if ! printf '%s\n' "$CHANGED" | grep -qx "$GOALGATE_FILE"; then
+  sum ""
+  sum "_\\`$GOALGATE_FILE\\` unchanged._"
+  say "guard: (f) goal-gate.sh unchanged."
+else
+  sum ""
+  sum "Changed: \\`$GOALGATE_FILE\\`"
+  if ! git cat-file -e "${MB}:${GOALGATE_FILE}" 2>/dev/null; then
+    sum ""
+    sum "- \\`$GOALGATE_FILE\\` is new in this PR (no base version) -- nothing removed."
+    say "guard: (f) goal-gate.sh is new; nothing to compare."
+  else
+    # Each entry: <token>|<what it protects>. One per line, `|`-separated so the
+    # reason is printed with the failure instead of being looked up elsewhere.
+    GOALGATE_TOKENS="
+--spend-limit|the spend limit's option, so a topic can be given a budget at all
+s_total|the measured spend, so the comparison has a left-hand side
+SPEND_LIMIT|the requested limit, so the comparison has a right-hand side
+-gt \"\$SPEND_LIMIT\"|the comparison itself: over budget means strictly past it
+exit 4|the exit code a /goal's runtime enforces, and the one its tests assert
+HERMES_SESSION_ID|the session the spend is looked up by
+session_model_usage|the table the spend is measured from
+parent_session_id|the child-session walk, without which the sum is silently incomplete
+OVER BUDGET CHECK FAILED|the fail-closed branch: a limit that cannot be evaluated must not read as under budget
+"
+    removed=""
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      tok="${entry%%|*}"
+      why="${entry#*|}"
+      if git show "${MB}:${GOALGATE_FILE}" | grep -qF -- "$tok" \
+         && ! git show "${HEAD_SHA}:${GOALGATE_FILE}" | grep -qF -- "$tok"; then
+        removed="${removed}${tok}  (${why})"$'\n'
+      fi
+    done <<<"$GOALGATE_TOKENS"
+
+    if [ -n "$removed" ]; then
+      msg="$GOALGATE_FILE: a load-bearing mechanism was removed."
+      guard_fail "goal-gate" "$msg
+$(printf '%s' "$removed" | sed 's/^/    /')"
+      sum ""
+      sum "**A mechanism disappeared from \\`$GOALGATE_FILE\\`:**"
+      sum ""
+      sum '```'
+      printf '%s' "$removed" >>"${SUMMARY_FILE:-/dev/stdout}"
+      sum '```'
+      sum ""
+      sum "If this is legitimate, add a \\`GUARD-OVERRIDE: goal-gate: <reason>\\` line to"
+      sum "the PR body. If it is not, the stop condition just stopped existing."
+    else
+      n="$(printf '%s\n' "$GOALGATE_TOKENS" | grep -c . )"
+      say "guard: (f) OK -- all $n load-bearing tokens still present."
+      sum ""
+      sum "All $n load-bearing tokens still present: the spend option, both sides of the"
+      sum "comparison, the exit code, the session lookup, the child walk, and the"
+      sum "fail-closed branch."
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------
