@@ -2486,3 +2486,92 @@ Also not done: the PR, CI verification of the workflow, the 150M/75M budget appr
   so that a refusal now panics while bubblewrap works; the injected defect fails 8 of 11.
 - **Unmeasured:** whether the 2b regressions can be avoided rather than accepted (option B or C
   would answer that).
+
+
+## 26 Sep 2026 — Phase 2e complete: six real defects found by probing, and CI green (Hermes session, `20260926_161007_a0461c`)
+
+Agent-reported entry, appended. Written after CI passed on `66ea225`.
+
+### Observed — the cage works, and CI proves it
+
+`66ea225`: **check success**, **hand-tests success**. From the runner's log, with
+bubblewrap 0.9.0 installed and the sysctl applied: `hand-test-2e.sh` **36 lines, 0
+failures, 32 cage lines measured**; `hand-test-2b.sh` **78 lines, 0 failures, 5 holes
+closed by 2e's cage**. The check job also installs bubblewrap now, and proves the cage
+builds before the tests run — without that it would have reported green while no cage
+existed (found on run 36264590591).
+
+### Observed — six defects, every one found by probing rather than reading
+
+Both independently written attack lists missed all of them. Each was measured, fixed,
+and given a test whose failure path was demonstrated by injecting the defect back.
+
+1. **The session keyring crossed the cage.** `keyctl print <host-key-id>` returned the
+   host's secret; `keyctl add … @s` wrote into the host's keyring; `keyctl unlink
+   <host-key-id> @s` **destroyed the host's key**. Read, write and delete across the
+   boundary. Fixed by entering a new empty session keyring in `pre_exec`, with
+   `keyring_is_severable()` refusing the whole run on a machine that will not allow it.
+2. **Inherited descriptors crossed the cage.** With fd 9 open to a host file outside
+   the root, a caged command read it (`HOST-CONTENT-DO-NOT-LEAK`) and wrote through
+   fd 8 to a second host file. A descriptor is not a path, so the cage's view of the
+   filesystem did not govern it. Fixed by closing every descriptor ≥ 3 in the child
+   and **verifying** the closure with `fcntl(F_GETFD)`.
+3. **Spawn refusals lost their distinct reasons.** The cage's own `execvp` text is one
+   sentence for three different problems, so 2b's §N.1–N.4 could not be met by parsing
+   it. Fixed by reading the cage's structured status (an absent `exit-code` line means
+   the command never started) and asking the cage's own filesystem why.
+4. **`TMPDIR` was missing** from the allowlist. 2b requires it: D.2 lists it and D.5
+   writes to it.
+5. **The /proc/self/mountinfo disclosure of the root's real path** and the backing
+   device — the one thing 2b's §A.8 asked 2e to close that is still open. Recorded
+   with its cause and three candidate fixes; needs a decision.
+6. **`awk` does not work inside the cage on Debian-family hosts.** The cage binds
+   `/usr` and nothing else, and there `awk` is routed through `/etc/alternatives`.
+   Found through 2e's own C.4 failing on the runner and passing here. Recorded as a
+   limit and a decision, not fixed.
+
+Also found and fixed inside the harnesses themselves: a vacuous-pass in
+`hand-test-2e.sh`'s own home-directory check (hard-coded `/home/muffin`, which on CI
+reported "THE HOST HOME DIRECTORY IS GONE" on a healthy runner), a verification script
+of mine that printed ALL CHECKS PASSED while a gate failed, and three clippy warnings I
+introduced.
+
+### Changed
+
+- Branch `feat/2e-cage-wip`, commits through `66ea225`, **not merged**. `main` is at
+  `b6e264c`.
+- New in the crate: `cage.rs` (the cage, its refusal reasons, the keyring and
+  descriptor severing), `tests/cage_tests.rs` (18 tests), `hand-test-2e.sh` (the gate),
+  `docs/archive/attack-list-2e.md` and `attack-list-2e-blind.md`.
+- 2b's harness updated against a caged runner: three expectations move and each cites
+  2b's own documents; the harness **probes** whether the binary cages, so the same file
+  still works against an uncaged runner. `DECISIONS.md` records the three and why
+  updating them is not a broken contract.
+- `crates/shell/README.md` corrected: the "No cage, no bubblewrap" bullet is no longer
+  true; the `pwd` section says what 2e did and did not close; a new limitations section
+  records the four measured limits (alternatives, the normalised death signal, no
+  resource limits, mountinfo).
+- Both workflows: bubblewrap install and the userns sysctl, in `check` as well as
+  `hand-tests`.
+- Issue **#89** filed, `parked`: the cage sets no resource limits.
+
+### Uncertain / not verified
+
+- **The TIOCSTI injection was never demonstrated.** The precondition is measurably
+  absent (no terminal descriptor reaches the command) but the ioctl itself could not
+  be made to fire even **without** a cage on this machine, because
+  `/proc/sys/dev/tty/legacy_tiocsti` is 0 and the control run failed too. Recorded as
+  unproven rather than blocked.
+- **The abstract-socket half of item 4 is inferred, not proven by a live connection.**
+  The harness connects to a name it constructs; it does not reach a real host abstract
+  socket. The filesystem half (no `/run/user/1000`) is directly observed.
+- **The 40-item independent list was never produced.** Its child ran 900s and wrote
+  nothing. The 12-item list it produced earlier did run and found no defect directly —
+  what found the real defects was probing the vectors that list pointed at.
+
+### The next session should read, in this order
+
+1. This entry, then `crates/shell/README.md`'s limitations section.
+2. `docs/archive/attack-list-2e-blind.md` — the sweep and the six findings.
+3. Before merging: the three open decisions — `/etc/alternatives`, the mountinfo
+   disclosure, and whether to accept the normalised death signal.
