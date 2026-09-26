@@ -470,6 +470,44 @@ Model in → tool call out → gate → execute → effect → repeat.
 - **A budget cap.** This is the first phase that costs money. A cap that pauses
   and asks — never one that kills — must exist here, not later.
 - Agent states emitted: `thinking`, `acting`, `running`, `idle`, `failed`.
+- **A fetch/search tool, and it is the agent's only route to the network.**
+  Added 26 Sep 2026, at Muffin's instruction, when D1 of Phase 2e was decided.
+
+  **Why it is here and not in the cage.** Phase 2e shuts the network inside
+  `run commands` — a caged command can reach nothing, which is the whole point
+  of the cage. That would leave an agent unable to look anything up. The two
+  requirements are not in conflict as long as the capability comes from the
+  right side of the wall: **agents look things up through a fetch/search tool
+  the loop calls directly, outside bubblewrap.** The cage's network is **not**
+  opened to cover for it, and must not be: opening it would mean a caged
+  command could reach out, which is the thing the phase exists to prevent.
+
+  **This is the only place in Atrium that is allowed to reach the network
+  directly.** When Phase 9 lands, MCP servers over remote transport will be a
+  second such place; until then it is the only one.
+
+  **Requirements.**
+
+  - **It runs outside the cage, as an ordinary trusted call by the loop** — not
+    as a caged command, and not by asking a caged command to fetch something.
+  - **Every call emits a `fetched` effect**, per `DESIGN.md` §6.2 (`fetched` —
+    "Data came in from outside the environment", marked external), carrying the
+    `source` field. `DESIGN.md` §6.1 is explicit that "browsed" is `fetched`
+    with a `source` and is not its own kind, so no new effect kind is added.
+  - **A call that returns data into the environment is a `fetched`; a failure is
+    not a `fetched`** — a failed fetch brought nothing in. The failure is
+    reported to the agent as a tool result, and it emits nothing. This
+    distinction is the item's own attack line.
+  - **Time limit and size cap**, reported as truncation rather than silence —
+    the same shape as `crates/shell`'s existing output cap
+    (`attack-list-2b.md` §F.3).
+  - **The URL is the agent's input.** It is not a path, so it does not go
+    through the resolver, and it must not be able to name a local file, a
+    `file://`, or a host path. A `fetch` is not a way around Phase 2e.
+
+  **Verification (user):** run a job that must look something up, watch the
+  effect log, and confirm the `fetched` record names the source; then point it at
+  a `file://` URL and confirm it is refused rather than reading the local file.
 
 **Verification (user):** give the agent a small job — "create a folder called
 notes and write three files in it summarising what is in the environment". Watch
