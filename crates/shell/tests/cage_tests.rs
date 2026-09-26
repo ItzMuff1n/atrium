@@ -315,23 +315,24 @@ fn the_command_gets_no_terminal_so_there_is_nothing_to_inject_into() {
     if let Some(o) = run_caged(
         &root,
         "/home/work",
-        "for f in 0 1 2; do if [ -t \"$f\" ]; then echo \"fd$f IS-A-TTY\"; else echo \"fd$f notty\"; fi; done; echo \"fds: $(ls -1 /proc/self/fd | tr '\\n' ' ')\"; echo \"ctty: $(awk '{print $7}' /proc/self/stat)\"",
+        // Deliberately no `awk`: on a Debian-family host `awk` is a symlink routed
+        // through /etc/alternatives, which the cage does not bind, so a caged
+        // command cannot resolve it. A structural assertion must not depend on the
+        // host's tool layout.
+        "for f in 0 1 2; do if [ -t \"$f\" ]; then echo \"fd$f IS-A-TTY\"; else echo \"fd$f notty\"; fi; done; echo \"fds: $(ls -1 /proc/self/fd | tr '\\n' ' ')\"",
     ) {
         let printed = out_text(&o);
         assert!(
             !printed.contains("IS-A-TTY"),
             "the command holds a terminal descriptor, which is the TIOCSTI precondition: {printed:?}"
         );
-        // Field 7 of /proc/self/stat is the controlling terminal. Checked as a
-        // secondary fact only: MEASURED, that field reads 0 even for an UNCAGED
-        // command run under a pty by a harness, so it does not discriminate on its
-        // own. The load-bearing assertion is the one above, and the detector
-        // behind it was validated by running it uncaged under a pty, where it does
-        // report `fd0 IS-A-TTY`.
-        assert!(
-            printed.contains("ctty: 0"),
-            "the command has a controlling terminal: {printed:?}"
-        );
+        // The controlling terminal is deliberately NOT asserted here. Measured: its
+        // field in /proc/self/stat reads 0 even for an UNCAGED command run under a
+        // pty by a harness, so it does not discriminate between the two cases and
+        // asserting it would be a test that passes for a reason unrelated to the
+        // cage. The assertion above is the load-bearing one, and the detector behind
+        // it was validated by running it uncaged under a pty, where it does report
+        // `fd0 IS-A-TTY`.
     }
     cleanup(&root);
 }
