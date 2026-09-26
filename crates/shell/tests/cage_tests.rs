@@ -107,7 +107,7 @@ fn a_write_from_inside_never_lands_in_the_hosts_tmp() {
     let root = isolated_root("hosttmp");
     let marker = format!("/tmp/atrium-2e-escape-{}", std::process::id());
     let _ = std::fs::remove_file(&marker);
-    if let Some(_) = run_caged(&root, "/home/work", &format!("touch {marker}")) {
+    if run_caged(&root, "/home/work", &format!("touch {marker}")).is_some() {
         assert!(
             !Path::new(&marker).exists(),
             "a caged command wrote into the real /tmp — THE CAGE LEAKS"
