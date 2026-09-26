@@ -60,6 +60,15 @@
 #   - a comment added next to a mutants.toml exclusion that gives a reason in
 #     form only. The guard checks that a reason is PRESENT and non-trivial, not
 #     that it is true.
+#   - a YAML SPELLING of a swallow that the pattern list does not cover. The
+#     list matches `continue-on-error: true` and the other forms written
+#     plainly. A QUOTED key -- `"continue-on-error": true` -- parses to the
+#     same thing in YAML and GitHub honours it exactly the same way, and is
+#     NOT matched, so it passes this check. Observed 26 Sep 2026 while fixing
+#     #78, with the parsed YAML shown. Not fixed: closing one spelling invites
+#     the next, and this check compares text rather than behaviour. Treat a
+#     green (d) as "no plainly-written swallow was added", not as proof that
+#     no step in the file can fail silently.
 #   - semantic equivalence the guard cannot see: it compares text, not behaviour.
 #
 # Requires: bash, git, cargo. No new project dependency, no network fetch.
