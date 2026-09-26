@@ -12,7 +12,7 @@
 # It covers, line by line:
 #   * every verification line in BUILD-PLAN.md §2e, quoted verbatim below;
 #   * requirement A (26 Sep 2026) — the environment is --clearenv plus ONLY
-#     PATH, HOME, TERM, LANG;
+#     PATH, HOME, TERM, LANG, TMPDIR;
 #   * requirement B (26 Sep 2026) — system folders bound read-only, /home and
 #     anything else not bound absent;
 #   * the fail-closed rules — a cage that cannot be built REFUSES the command
@@ -391,7 +391,7 @@ fi
 # D. REQUIREMENT A — the environment is exactly the allowlist
 # ===========================================================================
 say
-say "=== D. requirement A: --clearenv + ONLY PATH, HOME, TERM, LANG ==="
+say "=== D. requirement A: --clearenv + ONLY the permitted names (PATH HOME TERM LANG TMPDIR) ==="
 
 # Make the host side hostile, so a leak is visible rather than theoretical.
 export GH_AUDIT_TOKEN=FAKE-TOKEN-MUST-NOT-LEAK
@@ -411,21 +411,23 @@ if [ "$CAGED" = 1 ]; then
     done
     [ "$leaked" = 0 ] && ok "[D.1] none of the five known host variables reached the cage"
 
-    # The closed set. PWD and SHLVL are added by the shell and `_` by glibc's
-    # env; they are permitted BY NAME, with this reason, and nothing else is.
+    # The closed set. TMPDIR joined it on 26 Sep 2026 (Muffin's decision): the
+    # command is given a temporary directory, and it is the cage's own private
+    # tmpfs, never the host's /tmp. PWD and SHLVL are added by the shell and `_`
+    # by glibc's env; they are permitted BY NAME, with this reason, nothing else.
     unexpected=""
     while IFS= read -r line; do
         [ -n "$line" ] || continue
         name="${line%%=*}"
         case "$name" in
-            PATH|HOME|TERM|LANG|PWD|SHLVL|_) : ;;
+            PATH|HOME|TERM|LANG|TMPDIR|PWD|SHLVL|_) : ;;
             *) unexpected="$unexpected $name" ;;
         esac
     done <<< "$printed"
     if [ -n "$unexpected" ]; then
         bad "[D.1] unlisted variables reached the cage:$unexpected"
     else
-        ok "[D.1] every name present is in the permitted set (PATH HOME TERM LANG PWD SHLVL _)"
+        ok "[D.1] every name present is in the permitted set (PATH HOME TERM LANG TMPDIR PWD SHLVL _)"
     fi
 fi
 

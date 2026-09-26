@@ -418,85 +418,86 @@ pub fn build(
     check_root_isolated(root)?;
 
     let mut a: Vec<String> = Vec::new();
-    let mut push = |s: &str| a.push(s.to_string());
+    {
+        let mut push = |s: &str| a.push(s.to_string());
 
-    // Every namespace: user, mount, PID, network, IPC, UTS. The network being
-    // inside this list is Muffin's decision D1 of 26 Sep 2026 — shut — and the
-    // agent's ability to look things up comes from a fetch tool the loop calls
-    // outside this cage instead (BUILD-PLAN.md Phase 5). `--share-net` must
-    // never appear here (attack-list-2e.md §H.9).
-    push("--unshare-all");
-    // The command dies with the runner: no survivor outlives the run
-    // (attack-list-2e.md §C.11, §I.6).
-    push("--die-with-parent");
-    // No controlling terminal inherited.
-    push("--new-session");
-    // Clear the environment. Without this the host's variables reach the
-    // command, measured (attack-list-2e.md §E).
-    push("--clearenv");
+        // Every namespace: user, mount, PID, network, IPC, UTS. The network being
+        // inside this list is Muffin's decision D1 of 26 Sep 2026 — shut — and the
+        // agent's ability to look things up comes from a fetch tool the loop calls
+        // outside this cage instead (BUILD-PLAN.md Phase 5). `--share-net` must
+        // never appear here (attack-list-2e.md §H.9).
+        push("--unshare-all");
+        // The command dies with the runner: no survivor outlives the run
+        // (attack-list-2e.md §C.11, §I.6).
+        push("--die-with-parent");
+        // No controlling terminal inherited.
+        push("--new-session");
+        // Clear the environment. Without this the host's variables reach the
+        // command, measured (attack-list-2e.md §E).
+        push("--clearenv");
 
-    // The cage program's structured status, on fd 3. This is the only honest
-    // way to tell "the command ran and ended" from "the command never started":
-    // when an `exec` fails the cage program writes no `exit-code` line, and the
-    // command's own exit status is therefore unavailable. Reading that from the
-    // cage program's error text would be atrium's contract implemented in
-    // someone else's spelling (Muffin's decision, 26 Sep 2026).
-    push("--json-status-fd");
-    push(STATUS_FD);
+        // The cage program's structured status, on fd 3. This is the only honest
+        // way to tell "the command ran and ended" from "the command never started":
+        // when an `exec` fails the cage program writes no `exit-code` line, and the
+        // command's own exit status is therefore unavailable. Reading that from the
+        // cage program's error text would be atrium's contract implemented in
+        // someone else's spelling (Muffin's decision, 26 Sep 2026).
+        push("--json-status-fd");
+        push(STATUS_FD);
 
-    // The four allowed variables, and nothing else.
-    for (k, v) in ALLOWED_ENV {
+        // The four allowed variables, and nothing else.
+        for (k, v) in ALLOWED_ENV {
+            push("--setenv");
+            push(k);
+            push(v);
+        }
+        // HOME is the cage's own root, so a program writing to `$HOME` writes
+        // inside the environment and never near the host's home
+        // (attack-list-2e.md §C.7, §E.5).
         push("--setenv");
-        push(k);
-        push(v);
+        push("HOME");
+        push("/");
+
+        // The environment root, at `/`. FIRST, so the read-only system bindings
+        // below are laid on top of it rather than being replaced by it — bubblewrap
+        // applies its operations in order, and getting this wrong produces a cage
+        // that silently is not the cage (measured while probing this phase:
+        // binding the root last wiped every system directory and `execvp` then
+        // failed with "No such file or directory").
+        push("--bind");
+        push(&root.to_string_lossy());
+        push("/");
+
+        // The system directories a real shell needs, read-only, on top of the root.
+        for d in READ_ONLY_BINDS {
+            push("--ro-bind");
+            push(d);
+            push(d);
+        }
+
+        // A fresh /proc and /dev: the processes the command can see are its own,
+        // and no host device is reachable through /dev.
+        push("--proc");
+        push("/proc");
+        push("--dev");
+        push("/dev");
+
+        // A private, empty /tmp. Not a host directory: it is a fresh tmpfs, so a
+        // program that needs a writable temporary directory has one, and nothing
+        // written there appears in the host's /tmp (attack-list-2e.md §G.7).
+        push("--tmpfs");
+        push("/tmp");
+
+        // The working directory, named the way the agent named it. The root is at
+        // `/`, so this virtual path is also the real path inside the cage.
+        push("--chdir");
+        push(virtual_cwd);
+
+        // Everything above makes it a cage and is independent of the command, so it
+        // is kept: `classify_program` reuses exactly this prefix to ask the same
+        // cage a question. The builder closure is dropped first so its borrow of `a`
+        // has ended; the rest is pushed directly.
     }
-    // HOME is the cage's own root, so a program writing to `$HOME` writes
-    // inside the environment and never near the host's home
-    // (attack-list-2e.md §C.7, §E.5).
-    push("--setenv");
-    push("HOME");
-    push("/");
-
-    // The environment root, at `/`. FIRST, so the read-only system bindings
-    // below are laid on top of it rather than being replaced by it — bubblewrap
-    // applies its operations in order, and getting this wrong produces a cage
-    // that silently is not the cage (measured while probing this phase:
-    // binding the root last wiped every system directory and `execvp` then
-    // failed with "No such file or directory").
-    push("--bind");
-    push(&root.to_string_lossy());
-    push("/");
-
-    // The system directories a real shell needs, read-only, on top of the root.
-    for d in READ_ONLY_BINDS {
-        push("--ro-bind");
-        push(d);
-        push(d);
-    }
-
-    // A fresh /proc and /dev: the processes the command can see are its own,
-    // and no host device is reachable through /dev.
-    push("--proc");
-    push("/proc");
-    push("--dev");
-    push("/dev");
-
-    // A private, empty /tmp. Not a host directory: it is a fresh tmpfs, so a
-    // program that needs a writable temporary directory has one, and nothing
-    // written there appears in the host's /tmp (attack-list-2e.md §G.7).
-    push("--tmpfs");
-    push("/tmp");
-
-    // The working directory, named the way the agent named it. The root is at
-    // `/`, so this virtual path is also the real path inside the cage.
-    push("--chdir");
-    push(virtual_cwd);
-
-    // Everything above makes it a cage and is independent of the command, so it
-    // is kept: `classify_program` reuses exactly this prefix to ask the same
-    // cage a question. The builder closure is dropped first so its borrow of `a`
-    // has ended; the rest is pushed directly.
-    drop(push);
     let prefix = a.clone();
 
     // The command itself and its arguments, unaltered.
