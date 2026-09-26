@@ -72,6 +72,42 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # Phase 2e's cage. `crates/shell/hand-test-2e.sh` drives a bubblewrap
+      # cage, so the runner needs bubblewrap itself. It is NOT preinstalled on
+      # ubuntu-latest (measured 26 Sep 2026: `apt-get install bubblewrap` ->
+      # 0.9.0, ~6s).
+      #
+      # This is a SYSTEM dependency, not a cargo one: nothing enters Cargo.lock,
+      # deny.toml or the supply-chain gate. It was named in the Phase 2e plan and
+      # approved by Muffin on 26 Sep 2026 (AGENT-RULES.md section 5).
+      - name: Install bubblewrap (the cage the 2e hand-test drives)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          bwrap --version
+
+      # Unprivileged user namespaces are BLOCKED by default on GitHub's
+      # ubuntu-latest image, and bubblewrap cannot create its user namespace
+      # without them. Measured on run 36244899076, 26 Sep 2026:
+      #
+      #   kernel.apparmor_restrict_unprivileged_userns = 1        <- the blocker
+      #   bwrap functional test -> rc=1  (bwrap: setting up uid map: Permission denied)
+      #   sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 -> rc_sysctl=0
+      #   bwrap after sysctl -> rc=0   ("hello from inside the root")
+      #
+      # The sysctl holds for the rest of the job. Without it, every caged line
+      # in hand-test-2e.sh is REFUSED -- which is correct fail-closed behaviour
+      # and would make this job pass while testing nothing.
+      #
+      # It is deliberately NOT `continue-on-error`: if this fails, the cage is
+      # not available and that is a fact this job must report, not swallow.
+      - name: Allow unprivileged user namespaces (the runner blocks them by default)
+        run: |
+          echo "before: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '(absent)')"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "after:  $(sysctl -n kernel.apparmor_restrict_unprivileged_userns)"
+          unshare -Urm true && echo "userns: OK"
+
       # Build once, at the workspace root. `cargo build` in a workspace writes
       # target/debug at the ROOT whatever directory it runs from, which is the
       # path the scripts now resolve -- and building here means no script has to
@@ -94,6 +130,22 @@ jobs:
           fi
           echo "hand-test scripts found: ${#scripts[@]}"
           printf '  %s\n' "${scripts[@]}"
+          echo
+
+          # Phase 2e: state plainly whether a cage is available before the
+          # scripts run. hand-test-2e.sh reports it too, and a green run with no
+          # cage is a green run that proves nothing -- so it is printed here,
+          # where a reader is looking.
+          if [ -x /usr/bin/bwrap ]; then
+            echo "cage: bubblewrap present ($(/usr/bin/bwrap --version))"
+            if ! unshare -Urm true 2>/dev/null; then
+              echo "cage: *** WARNING: unprivileged user namespaces are NOT usable ***"
+              echo "cage: every caged line in hand-test-2e.sh will be refused."
+            fi
+          else
+            echo "cage: *** WARNING: no bubblewrap — hand-test-2e.sh will only"
+            echo "cage: exercise its fail-closed paths, not the cage. ***"
+          fi
           echo
 
           FAILED=0

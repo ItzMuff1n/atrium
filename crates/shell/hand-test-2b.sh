@@ -12,7 +12,8 @@
 # tracked throughout and re-checked after every line.
 #
 # The runner does NOT cage the command: §G lines are EXPECTED to reach the
-# host and are printed marked as HOLE, not counted as failures. The cage is
+# host and are printed marked CAGED (or HOLE when no cage is present), not
+# counted as failures. The cage is
 # BUILD-PLAN.md §2e. The outside sentinel is never the target of §G, so the
 # escape detector stays meaningful (§G.6).
 
@@ -483,46 +484,120 @@ expect_ran F.6 && {
 }
 
 echo
-echo "=== G. THE HOLE 2b DOES NOT CLOSE — expected to reach the host ==="
-echo "  These lines are marked HOLE, not pass/fail. 2b guarantees WHERE a"
-echo "  command starts and WHAT it is handed — it does NOT confine what the"
-echo "  command can then reach. Closing this is BUILD-PLAN.md §2e, a required"
-echo "  later phase. The outside sentinel directory is never the target (G.6),"
-echo "  so the escape detector above stays meaningful."
+echo "=== G. THE HOLE 2b DOES NOT CLOSE — and 2e's cage does ==="
+echo "  These lines were the hole: 2b guarantees WHERE a command starts and WHAT"
+echo "  it is handed — it does NOT confine what the command can then reach. They"
+echo "  are marked CAGED, not pass/fail, and every one of them must now FAIL to"
+echo "  reach the host (BUILD-PLAN.md §2e, which is the phase that closes this)."
+echo "  The outside sentinel directory is never the target (G.6), so the escape"
+echo "  detector above stays meaningful."
+echo
+echo "  WHAT THIS FILE'S BINARY IS. The workspace-root artefact is always the one"
+echo "  just built, so in a checkout carrying the cage §G asserts the hole is"
+echo "  CLOSED, and against a binary with no cage it prints the honest HOLE text"
+echo "  instead of a false pass. Which one runs is decided by evidence below."
+CAGED=0
 hole_line() {
     local section="$1" cwd="$2"; shift 2
     local out rc
     out="$("$BIN" run --root "$ROOT" --cwd "$cwd" -- "$@" 2>&1)"; rc=$?
-    printf '[HOLE ] %-45s %s\n' "$section: $cwd: $*" "$(printf '%s\n' "$out" | head -1)"
     OKS=$((OKS+1)); HOLES=$((HOLES+1))
     check_outside "$section"
     LAST_OUT="$out"; LAST_RC="$rc"; LAST_CHILD_STDOUT="$(printf '%s\n' "$out" | child_stdout)"
 }
+# Is a cage in force? Decided by EVIDENCE, not by assumption: run a marker into
+# the real /tmp and see whether it lands (2e's attack list §D).
+GPROBE=/tmp/atrium-2b-cage-probe-$$
+rm -f "$GPROBE"
+"$BIN" run --root "$ROOT" --cwd /home/work -- sh -c "touch $GPROBE" >/dev/null 2>&1
+if [ ! -e "$GPROBE" ]; then
+    CAGED=1
+    echo "  [evidence] a write into the real /tmp did NOT land -> the cage is in force."
+else
+    rm -f "$GPROBE"
+    echo "  [evidence] a write into the real /tmp DID land -> NO cage: these are still the holes."
+fi
+
 hole_line G.1 /home/work sh -c 'cd / && pwd'
-[ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "/" ] \
-    && echo "  (G.1 reached the host: cd / && pwd printed /)" \
-    || echo "  (G.1 observed: $(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n'))"
+if [ "$CAGED" = 1 ]; then
+    printf '[CAGED] %-45s %s\n' "G.1: cd / && pwd" "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"
+    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "/" ] \
+        && echo "     caged / is the sandbox's own root, not the host" \
+        || echo "     [note] cwd printed $(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n') — recorded, not asserted"
+else
+    printf '[HOLE ] %-45s %s\n' "G.1: cd / && pwd" "$(printf '%s\n' "$LAST_OUT" | head -1)"
+    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "/" ] \
+        && echo "  (G.1 reached the host: cd / && pwd printed /)"
+fi
 hole_line G.2 /home/work sh -c 'ls /'
-printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'etc' \
-    && echo "  (G.2 reached the host: / lists host entries)"
+if [ "$CAGED" = 1 ]; then
+    printf '[CAGED] %-45s %s\n' "G.2: ls /" "$(printf '%s' "$LAST_CHILD_STDOUT" | tr '\n' ' ')"
+    printf '%s' "$LAST_CHILD_STDOUT" | grep -qx 'etc' \
+        && { echo "     [FAIL] a top-level 'etc' is listed inside the cage"; FAILS=$((FAILS+1)); } \
+        || echo "     no top-level host 'etc' in the list"
+else
+    printf '[HOLE ] %-45s %s\n' "G.2: ls /" "$(printf '%s\n' "$LAST_OUT" | head -1)"
+    printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'etc' \
+        && echo "  (G.2 reached the host: / lists host entries)"
+fi
 hole_line G.3 /home/work sh -c 'cat /etc/passwd | head -1'
-printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'root' \
-    && echo "  (G.3 reached the host: read a line of the host /etc/passwd)"
+if [ "$CAGED" = 1 ]; then
+    printf '[CAGED] %-45s %s\n' "G.3: cat /etc/passwd" "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"
+    printf '%s' "$LAST_CHILD_STDOUT" | grep -qE ':0:0:' \
+        && { echo "     [FAIL] a passwd-shaped line came back from inside the cage"; FAILS=$((FAILS+1)); } \
+        || echo "     /etc/passwd is not reachable in the cage"
+else
+    printf '[HOLE ] %-45s %s\n' "G.3: cat /etc/passwd" "$(printf '%s\n' "$LAST_OUT" | head -1)"
+    printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'root' \
+        && echo "  (G.3 reached the host: read a line of the host /etc/passwd)"
+fi
 G4MARK=/tmp/atrium-2b-hole-marker-$$
 rm -f "$G4MARK"
 hole_line G.4 /home/work sh -c "touch $G4MARK"
-[ -e "$G4MARK" ] \
-    && { echo "  (G.4 reached the host: $G4MARK appeared in the real /tmp — deleting it)"; rm -f "$G4MARK"; } \
-    || { echo "[FAIL] [G.4] marker did not appear (expected to be demonstrated)"; FAILS=$((FAILS+1)); }
+if [ -e "$G4MARK" ]; then
+    if [ "$CAGED" = 1 ]; then
+        echo "  [FAIL] [G.4] a write into the real /tmp landed while the cage is in force — THE CAGE LEAKS"
+        FAILS=$((FAILS+1))
+    else
+        echo "  (G.4 reached the host: $G4MARK appeared in the real /tmp — deleting it)"
+    fi
+    rm -f "$G4MARK"
+else
+    if [ "$CAGED" = 1 ]; then
+        echo "  [CAGED] G.4: a write into the real /tmp did NOT land — the hole is closed"
+    else
+        echo "  [FAIL] [G.4] marker did not appear and no cage is in force (expected to be demonstrated)"
+        FAILS=$((FAILS+1))
+    fi
+fi
 G5MARK=/tmp/atrium-2b-hole-marker2-$$
 rm -f "$G5MARK"
 hole_line G.5 /home/work sh -c "touch $G5MARK; touch inside.txt"
-[ -e "$G5MARK" ] && { echo "  (G.5 reached the host AND started inside: both files created — deleting the host marker)"; rm -f "$G5MARK"; } \
-    || { echo "[FAIL] [G.5] marker2 did not appear"; FAILS=$((FAILS+1)); }
+if [ -e "$G5MARK" ]; then
+    if [ "$CAGED" = 1 ]; then
+        echo "  [FAIL] [G.5] marker2 landed on the host while the cage is in force — THE CAGE LEAKS"
+        FAILS=$((FAILS+1))
+    else
+        echo "  (G.5 reached the host AND started inside: both files created — deleting the host marker)"
+    fi
+    rm -f "$G5MARK"
+else
+    if [ "$CAGED" = 1 ]; then
+        echo "  [CAGED] G.5: the host write did not land; the inside write must have — checking it now"
+    else
+        echo "  [FAIL] [G.5] marker2 did not appear"
+        FAILS=$((FAILS+1))
+    fi
+fi
 must_exist_inside G.5 "$ROOT/home/work/inside.txt"
 echo "  G.6 — the outside sentinel is checked above after every line, §G included."
+if [ "$CAGED" = 1 ]; then
+    echo "  G.7 — 2e's cage is in force, so these five lines demonstrate the CLOSED hole."
+    echo "        The tally reports them as 'holes closed by 2e', not demonstrated."
+fi
 
 echo
+
 echo "=== H./I. messages and independence ==="
 # H.4 is structural: the runner passes command output through unaltered —
 # already exercised by A.1/A.4 (the real path appears in the child's own
@@ -786,10 +861,18 @@ echo "/etc/passwd after: $(cksum /etc/passwd) $(stat -c '%Y' /etc/passwd)"
 
 rm -rf "$ROOT" "$OUTSIDE"
 echo
-echo "lines run: $OKS   failures: $FAILS   holes demonstrated (expected, 2e's): $HOLES"
+if [ "$CAGED" = 1 ]; then
+    echo "lines run: $OKS   failures: $FAILS   holes closed by 2e's cage: $HOLES"
+else
+    echo "lines run: $OKS   failures: $FAILS   holes demonstrated (expected, 2e's): $HOLES"
+fi
 if [ "$FAILS" -gt 0 ]; then
     echo "hand-test-2b: $FAILS FAILED"
     exit 1
 fi
-echo "hand-test-2b: every line behaved as required (the 5 HOLE lines reached the host by design)"
+if [ "$CAGED" = 1 ]; then
+    echo "hand-test-2b: every line behaved as required (the 5 §G lines show the hole 2e CLOSED)"
+else
+    echo "hand-test-2b: every line behaved as required (the 5 HOLE lines reached the host by design)"
+fi
 exit 0

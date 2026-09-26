@@ -223,6 +223,28 @@ fn unique() -> u64 {
     N.fetch_add(1, Ordering::SeqCst)
 }
 
+/// The options these tests run with: the **2b behaviour, no cage**.
+///
+/// These tests assert 2b's contract, and that contract is *not* 2e's. Chiefly:
+/// 2b reports the command's working directory as the **real** path inside the
+/// environment root (see `a1_pwd_is_the_resolved_directory`), whereas 2e's cage
+/// gives the command the root **at `/`**, so `pwd` there is the virtual path.
+/// Both are correct for their own phase.
+///
+/// So this is not a test weakening and not a default that leaked. It is the
+/// same distinction the hand-tests draw: `hand-test-2b.sh` covers 2b's
+/// guarantee and `hand-test-2e.sh` covers the cage. Running these caged would
+/// mean rewriting their assertions to 2e's contract, which would **delete 2b's
+/// evidence** rather than add 2e's.
+///
+/// Asked for by name (`uncaged_for_runner_tests`) so it cannot happen by
+/// accident. Nothing outside a test can reach it: `runner_opts()` is
+/// caged, and `crates/shell/src/main.rs` has no flag for this — asserted by
+/// `the_cli_has_no_way_to_ask_for_an_uncaged_run` in this file.
+fn runner_opts() -> RunOptions {
+    RunOptions::uncaged_for_runner_tests()
+}
+
 fn vp(s: &str) -> VirtualPath {
     VirtualPath::new(s).expect("test paths are absolute, constant")
 }
@@ -259,7 +281,7 @@ fn sh(line: &str) -> (String, Vec<String>) {
 
 fn run_sh(root: &Path, cwd: &str, line: &str) -> atrium_shell::Outcome {
     let (p, a) = sh(line);
-    run(root, &vp(cwd), &p, &a, &RunOptions::default())
+    run(root, &vp(cwd), &p, &a, &runner_opts())
         .unwrap_or_else(|e| panic!("run of {:?} refused: {}", line, e))
 }
 
@@ -364,7 +386,7 @@ fn a7_documents_is_the_roots_documents_not_the_hosts() {
 /// never names a real path — H.1).
 fn assert_refused(root: &Path, cwd: &str, want_words: &[&str], forbidden: &[&Path]) {
     let (p, a) = sh("touch SHOULDRUN_marker");
-    let r = run(root, &vp(cwd), &p, &a, &RunOptions::default());
+    let r = run(root, &vp(cwd), &p, &a, &runner_opts());
     match r {
         Ok(o) => panic!(
             "cwd {:?} must REFUSE, but it RAN (status {})",
@@ -473,7 +495,7 @@ fn b9_refusal_leaves_the_filesystem_byte_identical() {
     let before = snapshot(&root);
     let (p, a) = sh("touch marker_b9");
     for cwd in ["/home/../../work", "/nonexistent/work", "/afile.txt"] {
-        let r = run(&root, &vp(cwd), &p, &a, &RunOptions::default());
+        let r = run(&root, &vp(cwd), &p, &a, &runner_opts());
         assert!(r.is_err(), "{:?} must refuse", cwd);
     }
     assert_eq!(snapshot(&root), before, "refusals changed the filesystem");
@@ -559,7 +581,7 @@ fn c5_exit_127_is_an_exit_code_not_a_runner_error() {
     let root = f.root.clone();
     let _outside = f.outside.clone();
     let (p, a) = ("definitely-not-a-real-command-2b".to_string(), vec![]);
-    let r = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default());
+    let r = run(&root, &vp("/home/work"), &p, &a, &runner_opts());
     // The runner cannot START a missing program; that is a Spawn refusal.
     // The 127-as-exit-code case is the shell's own report, tested here:
     assert!(matches!(r, Err(RunError::Spawn { .. })));
@@ -620,7 +642,7 @@ fn c9_all_256_byte_values_come_back_exactly() {
     // is nothing.
     let (p, a) =
         sh("i=0; while [ $i -lt 256 ]; do printf \"\\\\$(printf '%03o' $i)\"; i=$((i+1)); done");
-    let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).unwrap();
+    let o = run(&root, &vp("/home/work"), &p, &a, &runner_opts()).unwrap();
     assert_eq!(o.stdout.len(), 256, "got {} bytes", o.stdout.len());
     want.dedup(); // no-op; keep 0..=255 inclusive, exact order
     let want: Vec<u8> = (0u16..=255).map(|b| b as u8).collect();
@@ -640,14 +662,7 @@ fn c10_arguments_survive_intact_spaces_quotes_dollar() {
         "has'quote\"and$dollar".to_string(),
         "  padded  ".to_string(),
     ];
-    let o = run(
-        &root,
-        &vp("/home/work"),
-        "printf",
-        &args,
-        &RunOptions::default(),
-    )
-    .unwrap();
+    let o = run(&root, &vp("/home/work"), "printf", &args, &runner_opts()).unwrap();
     assert_eq!(
         out_text(&o),
         "[two words][has'quote\"and$dollar][  padded  ]"
@@ -821,7 +836,7 @@ fn f1_and_f2_a_command_that_never_exits_is_stopped_and_gone() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.timeout = Duration::from_millis(400);
     let (p, a) = sh("while true; do :; done");
     let before = std::time::Instant::now();
@@ -843,7 +858,7 @@ fn f2_no_orphan_process_left_behind() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.timeout = Duration::from_millis(300);
     // A marker sleep whose command line we can grep for afterwards.
     let marker = "atrium-2b-f2-sleep-marker";
@@ -870,7 +885,7 @@ fn f3_flooding_stdout_is_capped_and_reported() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.max_output_bytes = 4096;
     let (p, a) = sh("i=0; while [ $i -lt 100000 ]; do echo line-$i; i=$((i+1)); done");
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();
@@ -885,7 +900,7 @@ fn f4_flooding_stderr_is_capped_the_same_way() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.max_output_bytes = 4096;
     let (p, a) = sh("i=0; while [ $i -lt 100000 ]; do echo err-$i >&2; i=$((i+1)); done");
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();
@@ -902,7 +917,7 @@ fn f5_flooding_both_pipes_at_once_does_not_deadlock() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.max_output_bytes = 512 * 1024;
     opts.timeout = Duration::from_secs(20);
     let (p, a) =
@@ -920,7 +935,7 @@ fn f6_a_flooder_that_then_exits_normally_keeps_its_exit_code() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.max_output_bytes = 1024;
     let (p, a) = sh("i=0; while [ $i -lt 50000 ]; do echo $i; i=$((i+1)); done; exit 7");
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();
@@ -942,7 +957,7 @@ fn j1_through_j7_ordinary_commands_simply_work() {
         &vp("/home/work"),
         "echo",
         &["hi".to_string()],
-        &RunOptions::default(),
+        &runner_opts(),
     )
     .unwrap();
     assert_eq!(o.stdout, b"hi\n");
@@ -978,7 +993,7 @@ fn j1_through_j7_ordinary_commands_simply_work() {
     // J.7: the command's own arguments are its own business — a path that
     // does not exist yet (inside the root) simply works.
     let (p, a) = sh("touch brand-new-dir/file.txt 2>/dev/null; mkdir -p brand-new-dir && touch brand-new-dir/file.txt");
-    let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).unwrap();
+    let o = run(&root, &vp("/home/work"), &p, &a, &runner_opts()).unwrap();
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(root.join("home/work/brand-new-dir/file.txt").exists());
 }
@@ -1014,6 +1029,10 @@ fn n8_a_survivor_holding_the_pipes_does_not_extend_the_run() {
     let opts = RunOptions {
         timeout: Duration::from_millis(500),
         max_output_bytes: 1024,
+        // A test OF the runner, not of the cage: it drives the reader-grace
+        // path (attack-list-2b.md §N.8), which is 2b's own machinery. Uncaged
+        // deliberately, and named here rather than left to a default.
+        caged: false,
     };
     let t0 = std::time::Instant::now();
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).expect("the command runs");
@@ -1052,6 +1071,9 @@ fn n5_the_limit_holds_against_a_survivor_that_ignores_the_signal() {
     let opts = RunOptions {
         timeout: Duration::from_millis(500),
         max_output_bytes: 1024,
+        // A test OF the runner's kill-and-reap path (2b §F.1/§F.2), not of the
+        // cage. Uncaged deliberately.
+        caged: false,
     };
     let t0 = std::time::Instant::now();
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).expect("the command runs");
@@ -1080,6 +1102,8 @@ fn n10_the_cap_is_exact_at_its_boundary() {
         let opts = RunOptions {
             timeout: Duration::from_secs(10),
             max_output_bytes: 10,
+            // A test OF the runner's output cap (2b §F.3), not of the cage.
+            caged: false,
         };
         let o = run(&root, &vp("/home/work"), &p, &a, &opts).expect("runs");
         assert_eq!(
@@ -1150,7 +1174,7 @@ fn n1_to_n4_the_program_failing_to_start_is_its_own_refusal() {
     let mut reasons = Vec::new();
     for prog in ["./no-such-program", "./notexec.txt", "./subdir"] {
         let (p, a) = (prog.to_string(), Vec::<String>::new());
-        let err = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default())
+        let err = run(&root, &vp("/home/work"), &p, &a, &runner_opts())
             .expect_err("these must all refuse");
         let text = err.to_string();
         assert!(
@@ -1203,7 +1227,7 @@ fn n14_to_n16_arguments_and_program_names_reach_the_program_untouched() {
             "--show-real".to_string(),
         ],
     );
-    let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).expect("runs");
+    let o = run(&root, &vp("/home/work"), &p, &a, &runner_opts()).expect("runs");
     assert!(
         out_text(&o).contains("argv-count=3"),
         "got {:?}",
@@ -1216,7 +1240,7 @@ fn n14_to_n16_arguments_and_program_names_reach_the_program_untouched() {
         &vp("/home/work"),
         &"./argv.sh".to_string(),
         &[],
-        &RunOptions::default(),
+        &runner_opts(),
     )
     .expect("runs");
     assert!(out_text(&o).contains("argv-count=0"));
@@ -1226,18 +1250,18 @@ fn n14_to_n16_arguments_and_program_names_reach_the_program_untouched() {
         &vp("/home/work"),
         &"./argv.sh".to_string(),
         &["".to_string()],
-        &RunOptions::default(),
+        &runner_opts(),
     )
     .expect("runs");
     assert!(out_text(&o).contains("argv-count=1"));
 
     // N.16: a program name with a path is resolved against the child's cwd.
     let (p, a) = ("./argv.sh".to_string(), vec!["hello".to_string()]);
-    let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).expect("runs");
+    let o = run(&root, &vp("/home/work"), &p, &a, &runner_opts()).expect("runs");
     assert!(out_text(&o).contains("arg1=[hello]"));
 
     let (p, a) = ("../work/argv.sh".to_string(), vec!["uplevel".to_string()]);
-    let o = run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()).expect("runs");
+    let o = run(&root, &vp("/home/work"), &p, &a, &runner_opts()).expect("runs");
     assert!(
         out_text(&o).contains("arg1=[uplevel]"),
         "got {:?}",
@@ -1253,7 +1277,7 @@ fn n18_odd_cwd_spellings_reach_the_same_directory() {
     let root = f.root.clone();
     let _outside = f.outside.clone();
     let (p, a) = sh("touch norm.txt");
-    let o = run(&root, &vp("/home//work/./"), &p, &a, &RunOptions::default()).expect("runs");
+    let o = run(&root, &vp("/home//work/./"), &p, &a, &runner_opts()).expect("runs");
     assert_eq!(o.status, ExitStatus::Exited(0));
     assert!(
         root.join("home/work/norm.txt").exists(),
@@ -1308,13 +1332,7 @@ fn n_disclosure_no_real_path_in_any_refusal() {
     // And the same for a refusal caused by the cwd alone through the public
     // path, so the sweep is not dependent on assert_refused's marker handling.
     for cwd in refusers {
-        match run(
-            &root,
-            &vp(cwd),
-            &"true".to_string(),
-            &[],
-            &RunOptions::default(),
-        ) {
+        match run(&root, &vp(cwd), &"true".to_string(), &[], &runner_opts()) {
             Ok(_) => panic!("{cwd} must refuse"),
             Err(e) => {
                 let msg = e.to_string();
@@ -1371,7 +1389,7 @@ fn m3_a_timed_out_child_is_reaped_not_left_a_zombie() {
     let f = make_root();
     let root = f.root.clone();
     let _outside = f.outside.clone();
-    let mut opts = RunOptions::default();
+    let mut opts = runner_opts();
     opts.timeout = Duration::from_millis(300);
     let (p, a) = sh("while true; do :; done");
     let o = run(&root, &vp("/home/work"), &p, &a, &opts).unwrap();

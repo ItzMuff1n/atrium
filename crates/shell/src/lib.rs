@@ -23,6 +23,16 @@
 //! `BUILD-PLAN.md` §2e, a required later phase. attack-list-2b.md §G
 //! deliberately demonstrates the hole. There is no cage, bubblewrap,
 //! namespace, Landlock or container here, and adding one is out of scope.
+//!
+//! CORRECTION, 26 Sep 2026 — Phase 2e is built. The paragraph above was the
+//! honest scope of 2b alone, and its last sentence ("adding one is out of
+//! scope") contradicted `DECISIONS.md`, where strong confinement is a required
+//! phase that gates Phase 5. The cage is now `crates/shell/src/cage.rs`, and
+//! `run()` builds one before it spawns anything. What is confined is now the
+//! command's whole view of the filesystem: outside the environment root does
+//! not exist. See `cage.rs` and `DECISIONS.md` "Phase 2e: bubblewrap...".
+
+pub mod cage;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -164,6 +174,19 @@ pub struct Outcome {
 pub struct RunOptions {
     pub timeout: std::time::Duration,
     pub max_output_bytes: usize,
+    /// Run the command inside the Phase 2e cage. **On by default**, and it must
+    /// stay that way: the safe thing is what happens when nobody thinks about
+    /// it (`BUILD-PLAN.md` §2e, `attack-list-2e.md` §F).
+    ///
+    /// Setting this to `false` asks for the **2b behaviour** — a real command
+    /// with the user's own access — and it exists for one reason only: 2b's own
+    /// tests are tests OF the runner, and they have to be able to exercise it
+    /// without 2e's cage in the way. It is **not reachable from the CLI**: there
+    /// is no flag for it, so no caller can run a command uncaged by accident.
+    ///
+    /// A `true` here that cannot be honoured is a **refusal**, never a silent
+    /// fallback — see `run()`.
+    pub caged: bool,
 }
 
 impl Default for RunOptions {
@@ -171,6 +194,20 @@ impl Default for RunOptions {
         RunOptions {
             timeout: DEFAULT_TIMEOUT,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            caged: true,
+        }
+    }
+}
+
+impl RunOptions {
+    /// The 2b behaviour, named so that asking for it is a deliberate act:
+    /// a real command with the user's own access to the machine.
+    ///
+    /// Tests of the runner use this. Nothing that runs agent input may.
+    pub fn uncaged_for_runner_tests() -> Self {
+        RunOptions {
+            caged: false,
+            ..Default::default()
         }
     }
 }
@@ -195,6 +232,14 @@ pub enum RunError {
     /// The runner's own machinery failed (a reader thread could not be
     /// joined). Names which step.
     Internal { step: &'static str, reason: String },
+    /// Phase 2e: the cage could not be built, so **no process was started**.
+    /// This variant is the fail-closed path and it is deliberately an error
+    /// rather than a flag: there is no value of `run()`'s return that means
+    /// "the cage was unavailable, so here is the command's output anyway".
+    ///
+    /// `attack-list-2e.md` §F is the section that tests this, and F.7 is the
+    /// structural line: no code path spawns the command without the cage.
+    Uncageable(cage::CageError),
 }
 
 impl fmt::Display for RunError {
@@ -252,6 +297,10 @@ impl fmt::Display for RunError {
             RunError::Internal { step, reason } => {
                 write!(f, "runner failure while {} ({})", step, reason)
             }
+            // The cage's own message is already written to be safe on a
+            // default-output line: it names virtual paths and the failure, and
+            // never the environment's real location on disk.
+            RunError::Uncageable(e) => write!(f, "{}", e),
         }
     }
 }
@@ -317,16 +366,46 @@ pub fn run(
         }
     }
 
-    // 3. Spawn: fixed non-inherited environment, stdin at EOF, both
-    //    output streams piped.
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .current_dir(real.as_path())
-        .env_clear()
-        .env("PATH", CHILD_PATH)
-        .env("HOME", root)
-        .env("TMPDIR", root)
-        .stdin(Stdio::null())
+    // 3. Build the cage, if one is wanted, BEFORE anything is spawned. A
+    //    failure here is a REFUSAL and returns early: no process starts, and
+    //    the command is never run uncaged as a fallback. That ordering is the
+    //    whole of the fail-closed rule (`BUILD-PLAN.md` §2e,
+    //    `attack-list-2e.md` §F.1–F.6).
+    let cage = if opts.caged {
+        Some(cage::build(root, cwd.as_str(), program, args).map_err(RunError::Uncageable)?)
+    } else {
+        None
+    };
+
+    // 4. Spawn. Inside a cage the program is the cage program, and the command
+    //    is its argument — so `program` here is only ever spawned through the
+    //    cage. Uncaged (2b's own tests only), the program is the command.
+    let mut cmd = match &cage {
+        Some(c) => {
+            let mut cmd = Command::new(c.program());
+            cmd.args(c.args());
+            // The cage's OWN environment is cleared too. It inherits nothing
+            // from the runner: the four allowed variables are passed to the
+            // command by `--setenv` inside the cage, and the cage program
+            // itself needs no more than its own `PATH`-independent launch.
+            cmd.env_clear();
+            cmd
+        }
+        None => {
+            let mut cmd = Command::new(program);
+            cmd.args(args)
+                .current_dir(real.as_path())
+                // The 2b behaviour, unchanged and still asserted by 2b's own
+                // hand-test: a fixed non-inherited environment, `HOME` and
+                // `TMPDIR` pointing at the environment root.
+                .env_clear()
+                .env("PATH", CHILD_PATH)
+                .env("HOME", root)
+                .env("TMPDIR", root);
+            cmd
+        }
+    };
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
