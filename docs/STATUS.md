@@ -24,7 +24,28 @@ backup. **"Done" is now `scripts/check.sh` passing locally and the CI run on Git
 green for that commit** — not an agent's report. See `AGENT-RULES.md` §6 and "The
 repository" at the foot of this file.
 
-**Current phase: 2d — the filesystem watcher. VERIFIED HANDS-ON by Muffin, 25 Sep
+**Current phase: 2e — strong confinement for `run commands`. SIGNED OFF by Muffin, 26
+Sep 2026, by approval of the evidence rather than by a run he performed.** The crate is
+`crates/shell/` (binary `atrium-shell`), whose runner now cages every command. The entry
+sits in "Verified hands-on" below; the move from "Agent-reported, unverified" was his
+instruction, per `AGENT-RULES.md` §10, and the 25 Sep 2026 rule makes the sign-off his
+**approval of the quoted output and the CI run** (PR #90, CI green on `2ab8078`) — not a
+re-run. **36 lines, 0 failures, 32 cage lines measured**; 2b's five deliberate `HOLE`
+lines are closed by the same cage in the same CI job.
+
+**Phases 2a–2e and 1/1b are all signed off. Phase 5 (the agent loop) is the next build
+and is no longer blocked by 2e.** Read `BUILD-PLAN.md` §5 — and note the fetch/search
+tool item added to it on 26 Sep 2026: it is the agent's only route to the network, it
+runs outside the cage, and every successful call records a `fetched` effect.
+
+**The three limits 2e knowingly leaves open** (all recorded in `crates/shell/README.md`
+and in the sign-off entry): a tool routed through `/etc/alternatives` does not work
+inside the cage on Debian-family hosts; `/proc/self/mountinfo` still discloses the
+root's host path and backing device; a caged command's death signal is normalised, so
+`signal` and `exit 137` are indistinguishable. Plus **#89** (no resource limits, so a
+command can exhaust the host). None of these gates Phase 5.
+
+**Phase 2d — the filesystem watcher. VERIFIED HANDS-ON by Muffin, 25 Sep
 2026. Signed off.** The crate is `crates/watcher/` (binary `atrium-watcher`). It sits
 in "Verified hands-on" below with what he ran and what he saw, and that entry was
 **moved up from "Agent-reported, unverified" by Muffin's instruction** — the move is
@@ -51,9 +72,20 @@ merged `main` himself and reported `accepts: 53   rejects: 74` and
 hands-on" above and in the closure note at the head of the 18 Sep 2026 entry
 below.
 
-**Next: Phase 2e — strong confinement for `run commands`.** 2e is the last gate
-before Phase 5 (the agent loop) and is required
-after 2d, not instead of it. See the 2e paragraph below.
+**Phase 2e — strong confinement for `run commands`. VERIFIED HANDS-ON by Muffin, 26
+Sep 2026 — signed off by evidence, not by a run he performed. Signed off.** He
+approved the evidence (PR #90, CI green on `2ab8078`; merged `6fece66`) and did not
+re-run the script, per the rule changed 25 Sep 2026. See "Verified hands-on" for what
+he approved. **36 lines, 0 failures, 32 cage lines measured**; 2b's five deliberate
+`HOLE` lines are closed by the same cage in the same job. **Phase 5 (the agent loop) is
+no longer blocked by 2e.** Three limits 2e knowingly does not close — the
+`/etc/alternatives` gap, the `/proc/self/mountinfo` disclosure, and the normalised
+death signal — plus the absent resource limits (#89); none of them gates Phase 5.
+
+**Next: Phase 5 — the agent loop, now unblocked.** See `BUILD-PLAN.md` §5. Note the
+fetch/search tool item added to it on 26 Sep 2026: it is the agent's only route to the
+network, it runs outside the cage, and every successful call records a `fetched`
+effect.
 
 **Phase 2c — snapshot and restore. VERIFIED HANDS-ON by Muffin, 14 Sep 2026.
 Signed off.** See "Verified hands-on" below for what he ran and what he saw.
@@ -79,13 +111,13 @@ zero failures, nothing outside the environment root touched, no host path
 disclosed. The file-operation layer holds: create, read, write, move, delete and
 list now act on the environment through the Phase 1/1b resolver.
 
-**Phase 2e — strong confinement for `run commands` — is a required phase, after
-2d and before Phase 5 (the agent loop).** Found while starting 2b: "working
-directory confined" confines only the starting directory, so a real command can
-still reach the host. The plan's own Phase 2 verification block already demanded
-"confirm it cannot reach the host", so the cage is not optional — see the 2e
-entry under "Agent-reported", and `DECISIONS.md`. **Nothing autonomous may
-exercise the shell until 2e passes.**
+**Phase 2e — the phase that closed the shell's hole — is now signed off (26 Sep 2026),
+so the paragraph that stood here describing it as required-and-outstanding has been
+replaced by the entry above.** Its history: found while starting 2b, because "working
+directory confined" confines only the starting directory, so a real command could still
+reach the host, and the plan's own Phase 2 verification block already demanded "confirm
+it cannot reach the host". **Nothing autonomous may exercise the shell until 2e passes**
+— and it has passed, so that bar is cleared.
 
 **Phase 1b — Non-existent-path resolution. VERIFIED HANDS-ON by Muffin, 13 Sep
 2026, and signed off again on 18 Sep 2026 after its own property test reopened
@@ -559,6 +591,129 @@ itself — recorded as a limit, not claimed as neutral.
 reports inside the root, reaches nothing outside it, destroys nothing, and never prints
 the real path. He did **not** sign off any confinement of `run commands` — that is 2e,
 which this phase does not touch.
+
+### Phase 2e — strong confinement for `run commands` (Muffin, 26 Sep 2026)
+
+**This is the Phase 2e sign-off. The gate is passed. Phase 2e is signed off. Phase 5
+is no longer blocked by 2e.**
+
+**This entry records Muffin's approval of the evidence, not a run he performed.**
+Under the rule changed on 25 Sep 2026 (`AGENT-RULES.md` §10, `TOPICS.md` §§8–10) a
+scripted phase's sign-off is his approval of the quoted output plus the CI run that
+carries it, and **he did not re-run `hand-test-2e.sh`**. He approved the evidence on
+26 Sep 2026, in the words "I approve the 2e evidence (PR #90, CI green on 2ab8078)".
+Recorded at his instruction; agents may not move an entry into this section on their
+own judgement (`AGENT-RULES.md` §10). **Phase 2d is the last entry that is a recount
+of a run he performed**; from this entry on, that distinction is stated in the entry
+itself, as §10 requires.
+
+**What he approved: the evidence.**
+
+- **PR #90**, head `2ab8078a90423f089c653c0c3b762e7aaf6d0ff0`, all four check-runs
+  `completed/success`; merged squash as
+  **`6fece66b39dca74c99605a1c7c803c06c6210cce`**.
+- The CI run carrying the gate: **hand-tests run
+  [36266252912](https://github.com/ItzMuff1n/atrium/actions/runs/36266252912)**,
+  event `pull_request`, `headSha` `2ab8078a…`, conclusion `success`. `check` run
+  **[36266252901](https://github.com/ItzMuff1n/atrium/actions/runs/36266252901)**,
+  same head, conclusion `success`.
+
+**The exact command, and the harness's own final lines, quoted verbatim from run
+36266252912:**
+
+```
+lines run: 36   failures: 0   cage lines measured: 32
+hand-test-2e: every line behaved as required (cage in force; outside the root does not exist)
+```
+
+**The numbers the independent checks produced,** from the same run — these are the
+three checks that are independent of what the program says about itself:
+
+```
+  [ok  ] the outside directory is byte-identical to before the run
+  [ok  ] the host /etc/passwd is unchanged
+  [ok  ] the host home directory still exists (/home/runner)
+```
+
+**The five deliberate `HOLE` lines of 2b are closed by the same cage,** in the same
+job — this is the change flagged in the phase plan, and it is why 2b's tally moves:
+
+```
+lines run: 78   failures: 0   holes closed by 2e's cage: 5
+hand-test-2b: every line behaved as required (the 5 §G lines show the hole 2e CLOSED)
+```
+
+**Every other hand-test script in the same job was green** — 1b, 2a (64 lines), 2c
+(111 lines, `holes demonstrated (expected, 2e's): 0`), 2d (16 lines, `outside
+touches: 0   root disappearances: 0   real-path leaks: 0`). The runner's log names
+the cage it measured: `cage: bubblewrap present (bubblewrap 0.9.0)`.
+
+**CI on the merge commit itself**, `6fece66`: `fmt, build, test, clippy` **success**,
+`hand-tests` **success**, `test-guard` **skipped** — the guard job is
+`if: github.event_name == 'pull_request'` (`.github/workflows/check.yml` line 141), so
+it does not run on a push to `main` and its absence there is by design, not a failure.
+Its green on the PR is what the merge required.
+
+**What 2e is.** Inside a command's own view of the filesystem, outside the environment
+root **does not exist** — not "is checked for first". The network is shut, the
+environment is emptied to an explicit allowlist, `/usr` and its siblings are bound
+read-only, `/proc` and `/dev` are fresh, `/tmp` is private, and the command dies with
+the runner. A cage that cannot be established is a **refusal**: there is no CLI flag
+anywhere that runs a command uncaged. The environment root became its own mount
+point, so 2a's open item **L.4** — the hard-link channel — is closed by construction
+(`Invalid cross-device link`) rather than by a check.
+
+**The six defects, and how each was found — by probing, not by reading.** Both attack
+lists written for this phase missed every one of them. Each was measured, fixed, and
+given a test whose **failure path was demonstrated by injecting the defect back**:
+
+1. **The session kernel keyring crossed the cage** — read, write *and* delete of the
+   host's keys from inside. `--clearenv` cannot touch kernel state.
+2. **Inherited descriptors crossed the cage** — fd 9 open to a host file was read from
+   inside, and fd 8 written through. A descriptor is not a path.
+3. **Spawn refusals lost their distinct reasons** (2b's §N.1–N.4).
+4. **`TMPDIR` was missing** from the allowlist (2b's D.2/D.5 require it).
+5. **`/proc/self/mountinfo` discloses the root's real path** and the backing device
+   inside the cage — the one item `attack-list-2b.md` §A.8 asked 2e to close that is
+   still open.
+6. **`awk` does not work inside the cage on Debian-family hosts**, because there it is
+   routed through `/etc/alternatives`, which the cage does not bind.
+
+**Three limits carried out of this phase, stated rather than smoothed over.** They are
+recorded in `crates/shell/README.md` and were put to Muffin as decisions:
+
+- **`/etc/alternatives` is not bound**, so a tool routed through it does not work
+  inside the cage on Debian-family hosts. Muffin's decision was to **accept and park
+  it**; filed as its own issue, `parked`.
+- **`/proc/self/mountinfo` still discloses the root's host path and backing device.**
+  `/proc/mounts` and `/proc/self/maps` do not. Closing it means making the root the
+  root of its own mount rather than a subdirectory of one — a design change, not done.
+- **A caged command's death signal is normalised**: `kill -9 $$` and `exit 137` both
+  report `137`, so §C.6's signal-vs-exit distinction cannot be met for a caged run.
+  Uncaged is unchanged. Accepted and recorded.
+
+**One gap filed rather than fixed:** the cage sets **no resource limit** of its own
+(`ulimit -u`, `-n`, `-v` inside are the host's, and the run is in no cgroup), so a
+command that forks or allocates without bound can exhaust the machine while staying
+inside its root. Filed as **#89**, `parked`. The harness prints it as `[note] [D.10]
+GAP, not a fix` so a green run cannot read as "bounded".
+
+**What the passing 36 lines do and do not prove.** A passing line and a failing line
+differ by one printed word, so a run cannot be checked by eye for correctness — only
+for the absence of that word. Reading the script is what establishes that the right
+lines ran. Both attack lists were committed **before** the first line of cage code,
+provable from `git log`.
+
+**One thing the harness itself cannot prove, recorded plainly.** The cage's own
+independent value rests on the **blind** attack list, and the 40-item version was
+never produced — its child ran 900s and wrote nothing. The 12-item list that did
+complete ran and found no defect directly; what found the six real defects was probing
+the vectors that list pointed at. So the six were found by measurement, not by the
+independent check, and that is the honest state of the evidence.
+
+**Consequence:** 2e is signed off and **Phase 5 (the agent loop) is no longer blocked
+by it**. Nothing autonomous ran before 2e; that bar is now cleared. The three limits
+above are what 2e knowingly does not close, and none of them gates Phase 5.
 
 ### Topic — mutation cleanup: resolver and fileops mutants (Muffin, 19 Sep 2026)
 
@@ -2158,12 +2313,16 @@ Neither was ever a blocker for Phase 1 sign-off.
   exists" is satisfied. The gate is passed; see "Verified hands-on".
 - **Four crates now: `crates/resolver/`, `crates/fileops/`, `crates/shell/`, `crates/snapshot/` — all signed
   off.** Each separate so a signed-off thing cannot gain unverified code.
-- **Phase 2e — strong confinement for `run commands` — is required, after 2d and
-  before Phase 5.** "Working directory confined" is not confinement; a real
-  command can still reach the host, and the plan's own Phase 2 verification block
-  always demanded the opposite. See the 2e entry under "Agent-reported",
-  `DECISIONS.md`, and `BUILD-PLAN.md` §2e. **Nothing autonomous may exercise the
-  shell until 2e passes.**
+- **Phase 2e — strong confinement for `run commands` — is BUILT AND SIGNED OFF
+  (Muffin, 26 Sep 2026, by approval of the evidence: PR #90, CI green on `2ab8078`,
+  merged `6fece66`).** "Working directory confined" is not confinement; a real
+  command could reach the host, and the plan's own Phase 2 verification block always
+  demanded the opposite. That hole is now closed: inside a caged command's own view,
+  outside the environment root does not exist. See the 2e entry under "Verified
+  hands-on", `DECISIONS.md`, and `BUILD-PLAN.md` §2e. **Phase 5 (the agent loop) is
+  unblocked.** The three limits 2e knowingly does not close — `/etc/alternatives`, the
+  `/proc/self/mountinfo` disclosure, the normalised death signal — plus the absent
+  resource limits (#89) are recorded; none gates Phase 5.
 - Phase 2's parts all route through the Phase 1b resolver, which is signed off.
 - Phase 0 is throwaway spike code. Do not build architecture in it.
 - Phase 0b is a stop-and-rethink gate: if the Rust MCP SDK fails badly, the
