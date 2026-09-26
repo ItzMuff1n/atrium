@@ -1163,3 +1163,48 @@ spellings, which would not help: a relative path is only meaningful next to the 
 that precedes it, which a pattern cannot see.
 
 Reported in full in issue #76 §2.
+
+## The Pipeline v2 budget was raised from 60M to 300M mid-run (Muffin, 25 Sep 2026)
+
+**Decision, recorded here because it exists nowhere in `docs/` otherwise.** Topic #69
+(Pipeline v2) was planned and approved on 24 Sep 2026 with a **60M** token budget and a
+**25M early stop**. Both were superseded during the run: on 25 Sep 2026 Muffin raised the
+budget to **300M**. The figure the topic therefore ended against is **107.6M of 300M**, in
+the closing issue #76 §7.
+
+**The evidence, and its one honest limit.** The raise reaches the record as the
+`constraints:` line of the goal-continuation instruction — *"Budget raised to 300M by
+Muffin."* — which exists **only as a user message in the session store** for
+`20260924_212614_70af61` (25 Sep 2026 19:10:23 IDT, first occurrence). The originating chat
+message was not in this session and was not recoverable, so the exact time of the decision
+is not pinned; what is established is that it was in force by 19:10 on 25 Sep. Stated
+rather than smoothed over.
+
+**Ordering, because it changes what the raise means.** It was **not** a response to the
+missed checkpoint firing:
+
+| when (IDT) | what |
+|---|---|
+| 24 Sep 22:11 | T3 merged, `ee5cd16` |
+| 25 Sep ~19:0x | the 25M checkpoint was found crossed, and the miss self-reported |
+| 25 Sep 19:10 | the raise reached the session |
+| 25 Sep 21:48 | *"Spend: 107.6M of 300M"* first reported |
+
+The 25M checkpoint had already been reported as crossed before the raise arrived. So the
+existing checkpoint was **not** what the raise addressed; the budget was lifted during the
+continuation, on the same instruction that carried T5–T7 and the closing issue. The
+distinction is recorded because it is exactly the kind of thing a later session would get
+backwards, and the record previously supported both readings.
+
+**Why it is written down here rather than left in the issues.** `TOPICS.md` §7 makes spend
+accounting part of the topic routine, and `AGENT-RULES.md` §9 makes `STATUS.md` the file a
+session reads first. Both the 60M plan and the 300M raise lived only in issue #69 (open and
+readable) and issue #76 (closed). A later session reading the documents in the order the
+rules prescribe would find no budget figure at all.
+
+**No behaviour changed.** A budget is not a product decision and no code was touched. The
+figure bounds how long a `/goal` loop may run before it stops and reports.
+
+`AGENT-RULES.md` §6 is unaffected: it governs whether a phase's checks passed, not what a
+topic was allowed to spend.
+
