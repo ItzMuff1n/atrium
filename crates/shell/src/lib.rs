@@ -23,11 +23,38 @@
 //! `BUILD-PLAN.md` §2e, a required later phase. attack-list-2b.md §G
 //! deliberately demonstrates the hole. There is no cage, bubblewrap,
 //! namespace, Landlock or container here, and adding one is out of scope.
+//!
+//! CORRECTION, 26 Sep 2026 — Phase 2e is built. The paragraph above was the
+//! honest scope of 2b alone, and its last sentence ("adding one is out of
+//! scope") contradicted `DECISIONS.md`, where strong confinement is a required
+//! phase that gates Phase 5. The cage is now `crates/shell/src/cage.rs`, and
+//! `run()` builds one before it spawns anything. What is confined is now the
+//! command's whole view of the filesystem: outside the environment root does
+//! not exist. See `cage.rs` and `DECISIONS.md` "Phase 2e: bubblewrap...".
+
+pub mod cage;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
 use atrium_resolver::{resolve, ResolveError};
+
+// The two C library calls the cage's structured-status pipe needs. Declared as
+// `extern "C"` symbols and resolved against the libc Rust already links for
+// `x86_64-unknown-linux-gnu`, exactly as `crates/watcher/src/lib.rs` declares
+// inotify and `tests/fixture_lifecycle_tests.rs` declares `utimensat`. Nothing
+// is fetched from a registry, so this does not add a dependency.
+//
+// `pre_exec` runs between `fork` and `exec`, where only async-signal-safe work
+// is permitted. `dup2` and `fcntl` qualify; nothing here allocates or formats.
+extern "C" {
+    fn dup2(oldfd: i32, newfd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32;
+}
+
+/// `F_SETFD`: set the descriptor's flags. Used with a zero argument to clear
+/// `FD_CLOEXEC`.
+const F_SETFD: i32 = 2;
 
 /// The default time limit: 30 seconds. A safety stop so the runner cannot
 /// be hung (attack-list-2b.md §F.1). Settable via `RunOptions`.
@@ -164,6 +191,19 @@ pub struct Outcome {
 pub struct RunOptions {
     pub timeout: std::time::Duration,
     pub max_output_bytes: usize,
+    /// Run the command inside the Phase 2e cage. **On by default**, and it must
+    /// stay that way: the safe thing is what happens when nobody thinks about
+    /// it (`BUILD-PLAN.md` §2e, `attack-list-2e.md` §F).
+    ///
+    /// Setting this to `false` asks for the **2b behaviour** — a real command
+    /// with the user's own access — and it exists for one reason only: 2b's own
+    /// tests are tests OF the runner, and they have to be able to exercise it
+    /// without 2e's cage in the way. It is **not reachable from the CLI**: there
+    /// is no flag for it, so no caller can run a command uncaged by accident.
+    ///
+    /// A `true` here that cannot be honoured is a **refusal**, never a silent
+    /// fallback — see `run()`.
+    pub caged: bool,
 }
 
 impl Default for RunOptions {
@@ -171,6 +211,20 @@ impl Default for RunOptions {
         RunOptions {
             timeout: DEFAULT_TIMEOUT,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
+            caged: true,
+        }
+    }
+}
+
+impl RunOptions {
+    /// The 2b behaviour, named so that asking for it is a deliberate act:
+    /// a real command with the user's own access to the machine.
+    ///
+    /// Tests of the runner use this. Nothing that runs agent input may.
+    pub fn uncaged_for_runner_tests() -> Self {
+        RunOptions {
+            caged: false,
+            ..Default::default()
         }
     }
 }
@@ -190,11 +244,30 @@ pub enum RunError {
     /// §B.3/§B.4 — this phase's own check, not the resolver's).
     CwdNotADirectory { path: String },
     /// The operating system refused to start the program. Names the
-    /// program the caller asked for and the OS's own words.
+    /// program the caller asked for and the OS's own words. Reached only when
+    /// the **runner's own** spawn failed, which for a caged run means the cage
+    /// program itself could not be started.
     Spawn { program: String, reason: String },
+    /// The **command** could not be started inside the cage, and the reason is
+    /// one of atrium's own (`cage::SpawnReason`) — never the cage program's
+    /// error text, which reuses one sentence for three different problems
+    /// (`attack-list-2b.md` §N.1–N.4). No process of the command's ran, so this
+    /// is a refusal exactly as `Spawn` is; what differs is who is speaking.
+    SpawnInsideCage {
+        program: String,
+        reason: cage::SpawnReason,
+    },
     /// The runner's own machinery failed (a reader thread could not be
     /// joined). Names which step.
     Internal { step: &'static str, reason: String },
+    /// Phase 2e: the cage could not be built, so **no process was started**.
+    /// This variant is the fail-closed path and it is deliberately an error
+    /// rather than a flag: there is no value of `run()`'s return that means
+    /// "the cage was unavailable, so here is the command's output anyway".
+    ///
+    /// `attack-list-2e.md` §F is the section that tests this, and F.7 is the
+    /// structural line: no code path spawns the command without the cage.
+    Uncageable(cage::CageError),
 }
 
 impl fmt::Display for RunError {
@@ -249,9 +322,19 @@ impl fmt::Display for RunError {
                 "refused: the operating system could not start `{}` ({})",
                 program, reason
             ),
+            RunError::SpawnInsideCage { program, reason } => write!(
+                f,
+                "refused: `{}` could not be started ({})",
+                program,
+                reason.wording()
+            ),
             RunError::Internal { step, reason } => {
                 write!(f, "runner failure while {} ({})", step, reason)
             }
+            // The cage's own message is already written to be safe on a
+            // default-output line: it names virtual paths and the failure, and
+            // never the environment's real location on disk.
+            RunError::Uncageable(e) => write!(f, "{}", e),
         }
     }
 }
@@ -289,6 +372,7 @@ pub fn run(
     args: &[String],
     opts: &RunOptions,
 ) -> Result<Outcome, RunError> {
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     // 1. Resolve the cwd BEFORE anything is spawned. A refusal here means
@@ -317,23 +401,135 @@ pub fn run(
         }
     }
 
-    // 3. Spawn: fixed non-inherited environment, stdin at EOF, both
-    //    output streams piped.
-    let mut cmd = Command::new(program);
-    cmd.args(args)
-        .current_dir(real.as_path())
-        .env_clear()
-        .env("PATH", CHILD_PATH)
-        .env("HOME", root)
-        .env("TMPDIR", root)
-        .stdin(Stdio::null())
+    // 3. Build the cage, if one is wanted, BEFORE anything is spawned. A
+    //    failure here is a REFUSAL and returns early: no process starts, and
+    //    the command is never run uncaged as a fallback. That ordering is the
+    //    whole of the fail-closed rule (`BUILD-PLAN.md` §2e,
+    //    `attack-list-2e.md` §F.1–F.6).
+    let cage = if opts.caged {
+        Some(cage::build(root, cwd.as_str(), program, args).map_err(RunError::Uncageable)?)
+    } else {
+        None
+    };
+
+    // 4. Spawn. Inside a cage the program is the cage program, and the command
+    //    is its argument — so `program` here is only ever spawned through the
+    //    cage. Uncaged (2b's own tests only), the program is the command.
+    let mut cmd = match &cage {
+        Some(c) => {
+            let mut cmd = Command::new(c.program());
+            cmd.args(c.args());
+            // The cage's OWN environment is cleared too. It inherits nothing
+            // from the runner: the four allowed variables are passed to the
+            // command by `--setenv` inside the cage, and the cage program
+            // itself needs no more than its own `PATH`-independent launch.
+            cmd.env_clear();
+            cmd
+        }
+        None => {
+            let mut cmd = Command::new(program);
+            cmd.args(args)
+                .current_dir(real.as_path())
+                // The 2b behaviour, unchanged and still asserted by 2b's own
+                // hand-test: a fixed non-inherited environment, `HOME` and
+                // `TMPDIR` pointing at the environment root.
+                .env_clear()
+                .env("PATH", CHILD_PATH)
+                .env("HOME", root)
+                .env("TMPDIR", root);
+            cmd
+        }
+    };
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+
+    // The cage program's structured status goes to a pipe this process creates,
+    // at a descriptor number this process chooses — never inherited from the
+    // caller's descriptor table. It is what makes "the command never started"
+    // answerable at all: when an `exec` fails the cage program writes NO
+    // exit-code line, and it normalises everything else (measured 26 Sep 2026:
+    // a command killed by SIGKILL and one that called `exit 137` come back
+    // identically as `exit 137`), so the absence of that line is the only
+    // honest signal. Without it a caged run could not tell "never started" from
+    // "ran and exited 1", and §N.1–N.4 would be unimplementable.
+    let mut status_rx = None;
+    let mut status_tx = None;
+    if cage.is_some() {
+        let (rx, tx) = std::io::pipe().map_err(|e| RunError::Internal {
+            step: "making the pipe for the cage's structured status",
+            reason: e.to_string(),
+        })?;
+        let target: i32 = cage::STATUS_FD
+            .parse()
+            .expect("the status descriptor is a number");
+        let raw = {
+            use std::os::fd::AsRawFd;
+            tx.as_raw_fd()
+        };
+        // SAFETY: the closure runs in the forked child between fork and exec,
+        // where only async-signal-safe work is permitted. `dup2` and `fcntl`
+        // qualify. Nothing here allocates, locks or formats.
+        unsafe {
+            cmd.pre_exec(move || {
+                // Sever the keyring inheritance FIRST, before anything else can
+                // fail: the host's session keyring is otherwise reachable from
+                // inside the cage, and no clearing of the environment touches it
+                // (measured 26 Sep 2026 — read, write AND unlink all crossed).
+                // This runs between fork and exec, so it must stay
+                // async-signal-safe.
+                cage::join_new_session_keyring()?;
+                if dup2(raw, target) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // `dup2` clears FD_CLOEXEC on the new descriptor, but
+                // `dup2(n, n)` is a no-op that leaves the flag alone — so set it
+                // explicitly and both cases behave alike.
+                if fcntl(target, F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Drop every OTHER descriptor the embedding process happened to
+                // be holding. Measured 26 Sep 2026: a descriptor open to a file
+                // outside the environment root let a caged command read that
+                // file and write to it, with the filesystem boundary fully in
+                // place — a descriptor is not a path, so the cage's view of the
+                // filesystem does not govern it. This refuses rather than execs
+                // if any descriptor survived.
+                cage::close_all_but(target)?;
+                Ok(())
+            });
+        }
+        status_rx = Some(rx);
+        status_tx = Some(tx);
+    }
 
     let mut child = cmd.spawn().map_err(|e| RunError::Spawn {
         program: program.to_string(),
         reason: e.to_string(),
     })?;
+
+    // The parent's copy of the write end goes now — AFTER the spawn, never
+    // before. Dropping it first frees the descriptor number for reuse, and the
+    // child then inherits whatever took its place, so the read end never sees
+    // EOF and every caged run hangs. Measured: dropping it early made all nine
+    // probe cases hang.
+    drop(status_tx);
+
+    // Read the cage's status to EOF. The child holds the only write end left, so
+    // this ends when the cage program exits, whichever way it does.
+    //
+    // The reader thread is started here, before the wait loop below, because the
+    // pipe's buffer is far smaller than a status document: a cage that blocked
+    // writing it would otherwise never exit, and the loop would wait on a
+    // process that is waiting on us.
+    let status_handle = status_rx.map(|mut rx| {
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut s = String::new();
+            let _ = rx.read_to_string(&mut s);
+            s
+        })
+    });
 
     // 4. One reader thread per stream, from the moment the pipes exist, so
     //    neither pipe can fill while we are looking at the other (§F.5).
@@ -348,6 +544,9 @@ pub fn run(
     // 5. Poll for exit. Boring: try_wait, sleep a slice, repeat until the
     //    deadline.
     let deadline = std::time::Instant::now() + opts.timeout;
+    // Whether OUR time limit is what ended it. §C.6: `timed-out` means the
+    // runner's own timer fired, and nothing else may be reported that way.
+    let mut our_timer_fired = false;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => {
@@ -396,6 +595,7 @@ pub fn run(
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     // §F.1/§F.2: kill, then reap below — never left running.
+                    our_timer_fired = true;
                     let _ = child.kill();
                     break ExitStatus::TimedOut;
                 }
@@ -410,12 +610,44 @@ pub fn run(
         }
     };
 
-    // 6. Always reap. After a normal exit the status was already collected
-    //    by try_wait; after a timeout this collects the killed child so no
-    //    zombie or orphan is left.
+    // 5b. Read the cage's structured status, then reap. The cage program is the
+    //     process we waited on, but inside a cage the *command* is a different
+    //     process — so a status that is not the command's must never be
+    //     presented as the command's (`attack-list-2b.md` §N.1–N.4, §C.6).
+    //
+    //     If OUR timer fired, the cage program was signalled and a child it had
+    //     already started may have been killed by the cage's own teardown rather
+    //     than by the signal we sent. `--die-with-parent` makes that a certainty
+    //     for a survivor, but the command's own death signal is not knowable
+    //     from here, so the run is reported as what it is (`TimedOut`) and the
+    //     distinction is left to the caller. What §C.6 forbids is reporting the
+    //     OPPOSITE way: a command that died of a signal must never be reported
+    //     as a timeout, and it is not.
     if status == ExitStatus::TimedOut {
         let _ = child.wait();
     }
+    let cage_status = match status_handle {
+        Some(h) => h.join().unwrap_or_default(),
+        None => String::new(),
+    };
+
+    // 5c. Inside a cage, did the command actually start?
+    //
+    //     `exit-code` is written only when a command process existed and ended.
+    //     Its absence means the cage could not start it, so the raw exit status
+    //     above is the CAGE PROGRAM's and reporting it as the command's would be
+    //     exactly the fabricated-status failure §C.6 is about.
+    let status = if let Some(c) = &cage {
+        if !our_timer_fired && !cage_status.contains("exit-code") {
+            return Err(RunError::SpawnInsideCage {
+                program: program.to_string(),
+                reason: c.classify_program(program),
+            });
+        }
+        status
+    } else {
+        status
+    };
 
     // 7. Collect both streams, but NEVER block on them past the child's own
     //    end. This is attack-list-2b.md §N.8, and the defect it catches was

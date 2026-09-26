@@ -81,8 +81,14 @@ real location on disk. Exit codes: `0` success, `1` refusal, `2` usage error.
 
 ## What it deliberately does not do
 
-- **No cage, no bubblewrap, no namespaces, no Landlock, no container.** That is
-  §2e, with its own attack list. Nothing here tries.
+- ~~**No cage, no bubblewrap, no namespaces, no Landlock, no container.**~~ **No
+  longer true as of Phase 2e (26 Sep 2026).** The runner cages by default: every
+  command runs inside a bubblewrap sandbox whose view of the filesystem has the
+  environment root at `/`, with the network and the host environment closed, a fresh
+  PID namespace, and the session keyring and inherited descriptors severed. See
+  "Phase 2e" below and `crates/shell/src/cage.rs`. There is still no Landlock and no
+  container, and `run()` cannot be asked to skip the cage — there is no such option
+  reachable from the CLI.
 - **No shell parsing.** `run` takes a program and an argv; a line of shell is the
   caller's business (`sh -c '<line>'`). The program and its arguments are passed
   through untouched — not resolved, not checked, not rewritten. A command may
@@ -93,13 +99,22 @@ real location on disk. Exit codes: `0` success, `1` refusal, `2` usage error.
 
 ## A command can learn where the sandbox lives
 
-`pwd` prints the root's **real** on-disk path, because that is the command's own
-output and the runner does not rewrite it — redacting a command's output would
-corrupt data (a build log, a checksum, a diff) and would be the runner lying
-about what happened. So under 2b a command can discover the environment root's
-location, and so can anything driving it. Under §2e the command's view of the
-filesystem has the root at `/`, so there is no real path for it to print. This is
-a requirement on §2e, not a defect here (`attack-list-2b.md` §A.8, §H.4).
+Under 2b, `pwd` printed the root's **real** on-disk path, because that is the
+command's own output and the runner does not rewrite it — redacting a command's
+output would corrupt data (a build log, a checksum, a diff) and would be the runner
+lying about what happened. Under §2e the command's view of the filesystem has the
+root at `/`, so there is no real path for it to print — **which is what 2b's own
+documents asked for**: "Under §2e ... there is no real path for it to print. This is
+a requirement on §2e, not a defect here", and `attack-list-2b.md` §A.8/§H.4, whose
+closing list reads "A command can learn the sandbox's real path. **2e's to close.**"
+That requirement is now met for `pwd` and for the resolver's messages.
+
+It is **not** met by `/proc/self/mountinfo`, which reports the mount table — the
+root's host path and the backing device — inside the cage. Measured, with only
+`/proc/self/mountinfo` and `/proc/1/mountinfo` affected (`/proc/mounts` and
+`/proc/self/maps` are clean). Closing that needs the root to be the root of its own
+mount rather than a subdirectory of one; recorded in
+`docs/archive/attack-list-2e-blind.md`.
 
 The runner's **own** sentences never name a real path. Resolver rejections are
 re-worded from the resolver's structured error fields — the same pattern
@@ -144,3 +159,35 @@ No external crate. `std` only otherwise. The reason this is not the dependency
 - **§N.23 — a command can write anywhere in the root, including wherever the app
   keeps its own state.** Nothing separates sandbox content from app files. Needs
   deciding before anything durable lives in the root (Phase 2c is first exposed).
+
+### Phase 2e — three limits the cage introduces, measured not guessed
+
+- **A tool routed through `/etc/alternatives` does not work inside the cage.** The
+  cage binds `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` read-only and nothing else,
+  and on a Debian-family host the standard tool symlinks are routed through
+  `/etc/alternatives`, which is therefore absent inside. Measured on the GitHub
+  runner 26 Sep 2026: `awk` fails inside the cage there, while on a host where the
+  link is relative (`awk -> gawk`, staying within `/usr`) it works. The v1 rule is
+  "no host access", so this is the design meeting a real host rather than a bug —
+  but a command relying on that indirection will fail, and `hand-test-2e.sh` says so
+  out loud rather than skipping quietly. Worth a decision: bind `/etc/alternatives`
+  read-only, or accept it.
+- **A command killed by a signal is reported as an exit code, not a signal.** The
+  cage program waits for the command and reports its status in shell encoding,
+  normalising it: measured, `kill -9 $$` and `exit 137` both come back as `137`, so
+  the distinction §C.6 exists to preserve is destroyed before atrium sees it. This
+  applies **only** to a caged run; the uncaged runner still reports `signal 9`.
+  `timed-out` is unaffected: it means this runner's own timer fired.
+- **There is no resource limit.** `ulimit -u`, `-n` and `-v` inside are the host's
+  own values and the run is in no cgroup of its own, so a command that forks or
+  allocates without bound can exhaust the machine while staying inside its root.
+  Measured and filed as issue #89; constraining it means cgroups, which is its own
+  design.
+
+The real path is **not** disclosed by `pwd` — that is what the cage is for, and 2b's
+README asked for it. It IS still disclosed by `/proc/self/mountinfo`, which reports
+the mount table including the root's host path and the backing device (measured;
+`/proc/mounts` and `/proc/self/maps` do not). Filed with a real fix as issue #88's
+follow-up and recorded in `docs/archive/attack-list-2e-blind.md`; closing it properly
+means making the environment root the root of its own mount rather than a
+subdirectory of one.

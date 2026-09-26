@@ -1277,3 +1277,151 @@ figure bounds how long a `/goal` loop may run before it stops and reports.
 `AGENT-RULES.md` §6 is unaffected: it governs whether a phase's checks passed, not what a
 topic was allowed to spend.
 
+
+
+## Phase 2e — the cage, and the two guarantees it degrades
+
+**26 Sep 2026.** Written after the cage was built and measured. The mechanism decisions
+were approved earlier and are in issue #87 §5.2; this section records what building it
+found, including the part that is **not** settled.
+
+### The environment root must be its own filesystem, and `/dev/shm` is where it goes
+
+`bwrap --tmpfs /` is the wrong root: writes never reach the host, which breaks the phase's
+own verification line ("a file created inside appears at the environment root"). A tmpfs
+created *inside* the namespace is worse — it dies with the namespace, so the environment
+would not persist between runs. That is the flaw in the root-mount decision as literally
+approved; D2 is satisfied by resolving it, not by re-deciding it.
+
+The root therefore lives on an existing persistent tmpfs: `/dev/shm` (device 27, 16 G,
+world-writable) or `/run/user/1000` (device 71, the user's own). Because it is a separate
+device, a hard link across the boundary is impossible — `ln` returns `Invalid cross-device
+link` (observed). Open item **L.4 is closed by construction**, not by a check.
+
+`crates/shell/src/cage.rs` refuses a root that shares a filesystem with `/home`, `/tmp`,
+`/` or the working directory (`CageError::RootNotIsolated`), because a hard link is a second
+name for one file and no path check can see it.
+
+**bubblewrap's mount order is load-bearing.** The root `--bind` must come first; later binds
+lay on top. Binding the root last wipes the system binds and every command dies with
+`execvp /bin/sh: No such file or directory`.
+
+### Two guarantees Phase 2b was signed off on do not survive the cage
+
+Both measured 26 Sep 2026 on this machine, both against the cage as built.
+
+**1. A program that cannot start.** 2b's N.1–N.4 assert a `REFUSE /home/work — <reason>`
+line, with three *distinguishable* reasons for a missing program, a non-executable file and
+a directory. Under the cage the same three produce:
+
+```
+bwrap: execvp ./no-such-program-2b: No such file or directory     (62 bytes stderr)
+bwrap: execvp ./notexec.txt:         Permission denied            (47 bytes stderr)
+bwrap: execvp ./sub:                 Permission denied            (39 bytes stderr)
+```
+
+exit 1, stdout empty. 2b's first-line `REFUSE ` check fails, so N.1–N.3 fail and N.4 fails.
+The reasons are still *separable* in the text — this is not a collapse into one unreadable
+failure — but they are bubblewrap's words reached through the child's exit status, not
+atrium's `RunError::Spawn`. Nothing is reported as exit 127, which is the part N.5's
+predecessor cared about and that still holds.
+
+**2. `pwd` reports the virtual path.** 2b's A.1/A.4/A.6/A.7 assert the *real* path. Inside
+the cage `pwd` prints `/home/work`. `DESIGN.md` §3.1 wants exactly this — the agent never
+learns the real path exists, and the whole virtual-path contract depends on it. So the cage
+does not break a promise here; it breaks a **2b test that encoded the opposite**, which was
+correct for an uncaged runner and is wrong now.
+
+Also changed: the child's environment is the four-name allowlist, so `TMPDIR` is absent
+(2b's D.2 expects `PATH HOME TMPDIR`), and a killed child reports `timed-out` rather than
+exit 137 (2b's C.6), which is arguably the better report.
+
+**At 2b's default root (`/tmp`), 77 lines produce 70 failures** — because `/tmp` shares a
+filesystem, every line refuses before the test under it runs. With an isolated root the
+count is 10, the ones listed above. The isolation refusal is therefore working as designed;
+the harness root is simply in the wrong place.
+
+### Not decided — a stop-and-ask, per AGENT-RULES.md §5
+
+2b is a signed-off phase. Its harness is evidence that was accepted, and a later phase may
+not silently restate it. Three ways forward, none chosen:
+
+- **A.** Amend 2b's contract to the virtual path and to bubblewrap's wording, and re-run.
+- **B.** Run 2b's own harness uncaged (the cage is on by default, so this needs the named
+  opt-out), and cage everything else.
+- **C.** Make caging a per-call choice for this harness only.
+
+The work sits on branch `feat/2e-cage-wip`, unmerged, with the regressions open, until
+Muffin rules. A phase that cannot state its own verification is not finished.
+
+### The independent attack list found nothing, and that is worth recording
+
+A separate model (`glm-5.3-flash`) wrote a 12-item attack list from a plain-words
+description of the requirement, never seeing the code, the brief, or the author's own list.
+All 12 items were run; none found a defect. The near-miss and the reason it is kept are in
+`docs/archive/attack-list-2e-blind.md`.
+
+The same hazard was found twice from opposite directions: a first draft of the unit tests
+passed 10 of 11 against a deliberately broken cage (they accepted "refused" as a pass), and
+the blind list's B.2/D.3 items are aimed at exactly that fallback. The tests now panic when
+the cage is refused while bubblewrap is installed and working, and the injected defect fails
+8 of 11.
+
+### Environment
+
+The cage empties the environment (`--clearenv`) and passes back only `PATH HOME TERM LANG`;
+`PWD`, `SHLVL` and `_` appear because the shell and glibc add them, which is why the check
+is by name with those three named as permitted. `/usr /bin /sbin /lib /lib64` are bound
+read-only; `/bin` and friends are symlinks into `/usr` on this host. Network is shut
+(`--unshare-all`, never `--share-net`); the process list is private; `/proc` and `/dev` are
+fresh; `/tmp` is a private empty tmpfs.
+
+
+## 2b's expectations that the cage changes, and why updating them is not a broken contract
+
+*Recorded 26 Sep 2026, at Muffin's direction: "2b's signed-off evidence stays as the
+historical record."* The harnesses keep the old expectation in a comment beside each
+line it changed, and `hand-test-2b.sh` decides which expectations apply by **probing
+whether the binary actually cages**, so the same file still works against 2b's own
+uncaged runner.
+
+Three expectations move. Only three — every other line of 2b is one contract and must
+pass either way.
+
+### 1. `pwd` prints the VIRTUAL path (A.1, A.4, A.6, A.7)
+
+2b asserted the **real** path, and 2b's own documents say that is temporary:
+
+- `crates/shell/README.md`: *"Under §2e the command's view of the filesystem has the
+  root at `/`, so there is no real path for it to print. This is a requirement on
+  §2e, not a defect here."*
+- `attack-list-2b.md` §A.8, and its closing list: *"A command can learn the sandbox's
+  real path (§A.8, §H.4). **2e's to close.**"*
+- `DESIGN.md` §3.1: *"The agent never learns the real path exists."*
+
+So the cage does not break a 2b promise; it **carries out** one. The assertions move
+from `$ROOT/home/work` to `/home/work`, from `$ROOT` to `/`, and so on.
+
+### 2. `TMPDIR` is the cage's own `/tmp` (D.5)
+
+2b pointed `TMPDIR` at the root, so `touch "$TMPDIR/tmpfile"` appeared at
+`$ROOT/tmpfile`. Inside a cage `/tmp` is a private tmpfs, so the file is writable and
+never reaches the host — but it also does not appear at the root, because that tmpfs
+dies with the namespace. What matters (writable, and nothing outside touched) is
+asserted; where the bytes physically sit is not.
+
+Note the correction to an earlier reading in this phase: `TMPDIR` **is** 2b's
+requirement. `hand-test-2b.sh` D.2 lists it among the permitted names and D.5 writes
+to it. Adding it to 2e's allowlist was not optional.
+
+### 3. A caged command's death signal is not recoverable (C.6)
+
+Measured 26 Sep 2026: the cage program reports the child's status in shell encoding
+and **normalises** it — `kill -9 $$` and `exit 137` both come back identically as
+`137`. So inside a cage, §C.6's "report the signal, never collapse it" cannot be
+satisfied: the information is destroyed before atrium sees it. This is a **limit of
+the phase**, recorded in `crates/shell/README.md`, not a claim of compliance.
+
+What is still guaranteed, and tested: `timed-out` means our own timer fired and
+nothing else does, and a command that ends on its own keeps its own exit code. 2b's
+uncaged behaviour is unchanged, and the line is dual-mode.

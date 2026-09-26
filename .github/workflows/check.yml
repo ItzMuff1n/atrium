@@ -93,6 +93,37 @@ jobs:
       # that does contain one. Reproduced locally on 19 Sep 2026 in a throwaway
       # CARGO_HOME holding bin/cargo-deny and no .crates.toml: exit 101 without
       # --force, exit 0 with it.
+      # Phase 2e's cage, for the TEST step below. `crates/shell/tests/cage_tests.rs`
+      # drives real bubblewrap, and its own guard test skips rather than fails when
+      # the cage program is absent — so on a runner without it, MOST cage tests pass
+      # by taking their refusal path and prove nothing. Measured on run 36264590591,
+      # 26 Sep 2026: bubblewrap absent, 3 of 15 cage tests failed only because they
+      # refuse to skip, and the rest "passed" while no cage ever ran. Installing it
+      # here is what makes this job's green mean the cage holds.
+      #
+      # A SYSTEM dependency, not a cargo one: nothing enters Cargo.lock, deny.toml or
+      # the supply-chain gate. Named in the Phase 2e plan and approved by Muffin on
+      # 26 Sep 2026 (AGENT-RULES.md section 5). Same step as hand-tests.yml.
+      - name: Install bubblewrap (the cage the shell tests drive)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          bwrap --version
+
+      # Unprivileged user namespaces are blocked by default on GitHub's
+      # ubuntu-latest image, and bubblewrap cannot work without them. Without this
+      # the cage is unavailable, every caged run is refused, and the cage tests
+      # "pass" on their refusal path — a green run that proves nothing. Measured on
+      # run 36244899076.
+      - name: Allow unprivileged user namespaces (the runner blocks them by default)
+        run: |
+          echo "before: $(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo '(absent)')"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          unshare -Urm true && echo "userns: OK"
+          # Prove the cage actually builds, or fail HERE rather than silently
+          # passing the tests below.
+          bwrap --ro-bind / / --unshare-all /bin/true && echo "bwrap: functional"
+
       - name: Install cargo-deny (pinned)
         run: cargo install --locked --force cargo-deny --version 0.20.2
 
