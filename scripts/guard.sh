@@ -760,11 +760,30 @@ if [ -z "$WF_CHANGED" ]; then
 else
   # (2) An added continue-on-error, always-true guard, or swallowed failure.
   #
-  # ONE definition, used for both a changed workflow and a brand-new one. The
+  # ONE definition, used for both an edited workflow and a brand-new one. The
   # two must not drift apart: if a new file were checked against different
   # patterns than an edited one, "the guard checks workflows" would be true of
   # one case and not the other, which is how issue #78 arose in the first place.
   SWALLOW_RE='continue-on-error:[[:space:]]*true|if:[[:space:]]*true|if:[[:space:]]*\$\{\{[[:space:]]*true|\|\|[[:space:]]*true[[:space:]]*$|^\+[[:space:]]*exit 0[[:space:]]*$'
+
+  # The failure-swallowing lines ADDED to a workflow file, as diff lines.
+  #
+  # A YAML comment cannot swallow anything, so a line whose first non-blank
+  # character after the diff marker is `#` is not a candidate. Without that,
+  # a comment that merely NAMES the pattern -- for instance one explaining why
+  # it is deliberately not used -- was reported as adding it. Observed while
+  # testing this change, on a comment reading `continue-on-error: true`.
+  #
+  # The comment filter makes the check NARROWER, never blinder: every real
+  # swallow is an uncommented YAML key, and the probe below re-proves that a
+  # genuine added `continue-on-error: true` still fails.
+  wf_added_swallows() {
+    git diff -U0 "$1" "$2" -- "$3" >/tmp/guard-wf.diff 2>&1 || true
+    grep -E '^\+[^+]' /tmp/guard-wf.diff \
+      | grep -vE '^\+[[:space:]]*#' \
+      | grep -E "$SWALLOW_RE" \
+      || true
+  }
 
   for f in $WF_CHANGED; do
     if ! git cat-file -e "${MB}:$f" 2>/dev/null; then
@@ -783,10 +802,7 @@ else
       #
       # The diff against the merge base is the file's entire content as added
       # lines, so the same detector runs here as on an edited workflow.
-      git diff -U0 "$MB" "$HEAD_SHA" -- "$f" >/tmp/guard-wf.diff 2>&1 || true
-      added_swallow="$(grep -E '^\+[^+]' /tmp/guard-wf.diff \
-          | grep -E "$SWALLOW_RE" \
-          || true)"
+      added_swallow="$(wf_added_swallows "$MB" "$HEAD_SHA" "$f")"
       if [ -n "$added_swallow" ]; then
         msg="workflow $f (new in this PR):
   a failure-swallowing line was added:
@@ -847,11 +863,9 @@ $(printf '%s' "$added_swallow" | sed 's/^/    /')"
                               <(printf '%s\n' "$head_cmds" | grep .) || true)"
 
     # (2) An added continue-on-error, always-true guard, or swallowed failure.
-    # Same pattern as the new-file branch above: ONE definition, not two, so the
-    # two paths cannot drift apart.
-    added_swallow="$(grep -E '^\+[^+]' /tmp/guard-wf.diff \
-        | grep -E "$SWALLOW_RE" \
-        || true)"
+    # Same function as the new-file branch above: ONE definition, not two, so
+    # the two paths cannot drift apart.
+    added_swallow="$(wf_added_swallows "$MB" "$HEAD_SHA" "$f")"
 
     # (3) A loosened timeout or retry: a numeric value that went UP.
     # Extract "key=value" pairs from removed/added lines and compare per key.
