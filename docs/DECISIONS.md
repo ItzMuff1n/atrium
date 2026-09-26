@@ -1375,3 +1375,53 @@ is by name with those three named as permitted. `/usr /bin /sbin /lib /lib64` ar
 read-only; `/bin` and friends are symlinks into `/usr` on this host. Network is shut
 (`--unshare-all`, never `--share-net`); the process list is private; `/proc` and `/dev` are
 fresh; `/tmp` is a private empty tmpfs.
+
+
+## 2b's expectations that the cage changes, and why updating them is not a broken contract
+
+*Recorded 26 Sep 2026, at Muffin's direction: "2b's signed-off evidence stays as the
+historical record."* The harnesses keep the old expectation in a comment beside each
+line it changed, and `hand-test-2b.sh` decides which expectations apply by **probing
+whether the binary actually cages**, so the same file still works against 2b's own
+uncaged runner.
+
+Three expectations move. Only three — every other line of 2b is one contract and must
+pass either way.
+
+### 1. `pwd` prints the VIRTUAL path (A.1, A.4, A.6, A.7)
+
+2b asserted the **real** path, and 2b's own documents say that is temporary:
+
+- `crates/shell/README.md`: *"Under §2e the command's view of the filesystem has the
+  root at `/`, so there is no real path for it to print. This is a requirement on
+  §2e, not a defect here."*
+- `attack-list-2b.md` §A.8, and its closing list: *"A command can learn the sandbox's
+  real path (§A.8, §H.4). **2e's to close.**"*
+- `DESIGN.md` §3.1: *"The agent never learns the real path exists."*
+
+So the cage does not break a 2b promise; it **carries out** one. The assertions move
+from `$ROOT/home/work` to `/home/work`, from `$ROOT` to `/`, and so on.
+
+### 2. `TMPDIR` is the cage's own `/tmp` (D.5)
+
+2b pointed `TMPDIR` at the root, so `touch "$TMPDIR/tmpfile"` appeared at
+`$ROOT/tmpfile`. Inside a cage `/tmp` is a private tmpfs, so the file is writable and
+never reaches the host — but it also does not appear at the root, because that tmpfs
+dies with the namespace. What matters (writable, and nothing outside touched) is
+asserted; where the bytes physically sit is not.
+
+Note the correction to an earlier reading in this phase: `TMPDIR` **is** 2b's
+requirement. `hand-test-2b.sh` D.2 lists it among the permitted names and D.5 writes
+to it. Adding it to 2e's allowlist was not optional.
+
+### 3. A caged command's death signal is not recoverable (C.6)
+
+Measured 26 Sep 2026: the cage program reports the child's status in shell encoding
+and **normalises** it — `kill -9 $$` and `exit 137` both come back identically as
+`137`. So inside a cage, §C.6's "report the signal, never collapse it" cannot be
+satisfied: the information is destroyed before atrium sees it. This is a **limit of
+the phase**, recorded in `crates/shell/README.md`, not a claim of compliance.
+
+What is still guaranteed, and tested: `timed-out` means our own timer fired and
+nothing else does, and a command that ends on its own keeps its own exit code. 2b's
+uncaged behaviour is unchanged, and the line is dual-mode.

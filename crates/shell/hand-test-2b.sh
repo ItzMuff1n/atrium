@@ -4,23 +4,49 @@
 # root, with a throwaway OUTSIDE directory as the escape detector.
 #
 # Usage:  bash shell/hand-test-2b.sh [root]
-#         (default root: /tmp/atrium-2b-root)
+#         (default root: /dev/shm/atrium-2b-root)
+#
+# WHY NOT /tmp ANY MORE (26 Sep 2026). This harness ran against /tmp by default,
+# which 2e refuses: an environment root has to sit on its own filesystem, because a
+# hard link is a second name for one file rather than a path, and a root under /tmp
+# shares /tmp's device, so a link from /tmp into the root is creatable and the
+# boundary does not hold (DESIGN.md 3.1, cage::check_root_isolated). Under 2e every
+# line then refused before running and this harness reported 70 failures of 77
+# lines — a broken root, not a broken runner. /dev/shm is a separate tmpfs mount on
+# every standard Linux including the GitHub runner, so it is isolated, and it is
+# writable without privileges.
 #
 # The outside dir is <root's parent>/atrium-2b-outside. Both are deleted at
 # the end, along with ONLY the §G marker paths this script created in /tmp.
 # Nothing else is touched. The host /etc/passwd checksum and mtime are
 # tracked throughout and re-checked after every line.
 #
-# The runner does NOT cage the command: §G lines are EXPECTED to reach the
-# host and are printed marked CAGED (or HOLE when no cage is present), not
-# counted as failures. The cage is
-# BUILD-PLAN.md §2e. The outside sentinel is never the target of §G, so the
-# escape detector stays meaningful (§G.6).
+# THE RUNNER NOW CAGES THE COMMAND (BUILD-PLAN.md §2e, merged since 2b was
+# signed off). Every line therefore runs inside the cage, and two of 2b's own
+# expectations are updated below where 2b's documents already said the cage would
+# change them:
+#
+#   * A.1/A.4/A.6/A.7 — `pwd` now prints the VIRTUAL path. 2b's own README says
+#     so: "Under 2e the command's view of the filesystem has the root at /, so
+#     there is no real path for it to print. This is a requirement on 2e, not a
+#     defect here" (crates/shell/README.md), and attack-list-2b.md closes with
+#     "A command can learn the sandbox's real path (§A.8, §H.4). 2e's to close."
+#     Closing it is 2b's instruction being carried out, not a contract broken.
+#     The old expectations are kept in each line's comment as the historical
+#     record of what 2b asserted.
+#   * C.6 — inside a cage a command's death signal is not recoverable: the cage
+#     program normalises it (measured: `kill -9 $$` and `exit 137` come back
+#     identically as 137). The line is dual-mode and records which one it saw.
+#
+# §G lines are EXPECTED to fail to reach the host and are printed marked CAGED
+# (or HOLE when no cage is present), not counted as failures. The outside
+# sentinel is never the target of §G, so the escape detector stays meaningful
+# (§G.6).
 
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ROOT="${1:-/tmp/atrium-2b-root}"
+ROOT="${1:-/dev/shm/atrium-2b-root}"
 OUTSIDE="$(dirname "$ROOT")/atrium-2b-outside"
 
 # The binary lives in the WORKSPACE target dir, not the crate's.
@@ -62,6 +88,36 @@ echo "                   ($(stat -c '%y' "$BIN" | cut -c1-19), sha256 $(sha256su
 
 rm -rf "$ROOT" "$OUTSIDE"
 mkdir -p "$ROOT/home/documents/sub" "$ROOT/home/work" "$ROOT/trap" "$OUTSIDE/sub"
+
+# ---------------------------------------------------------------------------
+# IS THE COMMAND CAGED? Decided by EVIDENCE before anything else, not assumed.
+#
+# 2b was signed off against an uncaged runner, and this harness has to stay usable
+# against one (it is what proves the §G hole is a hole). But since 2e the runner
+# cages by default, which changes three of 2b's own expectations:
+#
+#   A.1/A.4/A.6/A.7  `pwd` prints the VIRTUAL path. 2b's README asks for this
+#                    ("Under 2e ... there is no real path for it to print. This is
+#                    a requirement on 2e, not a defect here"), and
+#                    attack-list-2b.md ends with "A command can learn the sandbox's
+#                    real path (§A.8, §H.4). 2e's to close."
+#   D.5              TMPDIR is the cage's own private /tmp, not the root.
+#   C.6              the death signal is not recoverable (the cage program
+#                    normalises it), so signal and exit 128+n are indistinguishable.
+#
+# Only these three expectations are conditional. Every other line is one contract
+# and must pass either way.
+# ---------------------------------------------------------------------------
+CAGED_2B=0
+CAGEPROBE=/tmp/atrium-2b-cagecheck-$$
+rm -f "$CAGEPROBE"
+"$BIN" run --root "$ROOT" --cwd /home/work -- sh -c "touch $CAGEPROBE" >/dev/null 2>&1
+if [ ! -e "$CAGEPROBE" ]; then CAGED_2B=1; else rm -f "$CAGEPROBE"; fi
+if [ "$CAGED_2B" = 1 ]; then
+    echo "binary is CAGED (2e): the virtual-path, TMPDIR and signal expectations are the 2e ones."
+else
+    echo "binary is UNCAGED (2b's own runner): the original 2b expectations apply."
+fi
 printf 'hi\n' > "$ROOT/home/documents/notes.txt"
 printf 'x\n'  > "$ROOT/afile.txt"
 ln -s "$OUTSIDE" "$ROOT/trap/escape"
@@ -184,14 +240,20 @@ must_exist_inside()    { [ -e "$2" ] || [ -L "$2" ] || { echo "  !! MUST EXIST M
 must_not_exist()       { [ ! -e "$1" ] && [ ! -L "$1" ] || { echo "  !! MARKER APPEARED: $1"; FAILS=$((FAILS+1)); }; }
 
 echo "=== A. where the command starts (RUNS; checked on disk) ==="
-# A.1/A.4/A.7 print the REAL path — the command's own output, the subject
-# of the line (H.2 exemption, marked).
-echo "  (A.1/A.4/A.7 print the command's own output, which contains the root's real path —"
-echo "   marked exemption per attack-list-2b.md H.2; this is §A.8, the disclosure 2b cannot prevent)"
+# A.1/A.4/A.6/A.7: the command's own `pwd`. Under 2e the view is virtual, so these
+# print the VIRTUAL path. 2b's README and attack-list-2b.md §A.8 both say closing
+# this is 2e's job; the old expectation (the real path) is noted per line.
+echo "  (A.1/A.4/A.6/A.7 assert the VIRTUAL path now: 2b's README says 'Under 2e the"
+echo "   command's view of the filesystem has the root at /, so there is no real path"
+echo "   for it to print. This is a requirement on 2e, not a defect here.')"
 run_line A.1 /home/work sh -c 'pwd'
 expect_ran A.1 && {
-    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "$ROOT/home/work" ] \
-        && echo "     ok: pwd is the REAL root's home/work: $(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" \
+    # 2b asserted `$ROOT/home/work` (the real path). 2e's virtual view is what
+    # 2b's README asks for, so the expectation moved with the phase — and only
+    # while the binary under test actually cages.
+    WANT_A1="/home/work"; [ "$CAGED_2B" = 1 ] || WANT_A1="$ROOT/home/work"
+    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "$WANT_A1" ] \
+        && echo "     ok: pwd is the VIRTUAL path /home/work (2b asserted the real path; README.md says 2e closes this)" \
         || { echo "[FAIL] [A.1] pwd was: $(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"; FAILS=$((FAILS+1)); }
 }
 run_line A.2 /home/work sh -c 'touch relative.txt'
@@ -202,8 +264,11 @@ expect_ran A.3; must_exist_inside A.3 "$ROOT/home/work/a/b/deep.txt"
 run_line A.4 / sh -c 'pwd'
 expect_ran A.4 && {
     P="$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"
-    [ "$P" = "$ROOT" ] && [ "$P" != "/" ] \
-        && echo "     ok: virtual / is the environment root: $P" \
+    # 2b asserted `$ROOT`. Under 2e, virtual / IS the root, so pwd prints / — which
+    # is the point of binding the root at / rather than elsewhere.
+    WANT_A4="/"; [ "$CAGED_2B" = 1 ] || WANT_A4="$ROOT"
+    [ "$P" = "$WANT_A4" ] \
+        && echo "     ok: virtual / is the environment root (pwd prints /, not a host path)" \
         || { echo "[FAIL] [A.4] pwd was: $P"; FAILS=$((FAILS+1)); }
 }
 run_line A.5 /home/work sh -c 'touch ../sibling.txt'
@@ -212,13 +277,16 @@ must_not_exist "$OUTSIDE/sibling.txt"
 run_line A.6 /home/documents/sub sh -c 'pwd; touch marker-sub.txt'
 expect_ran A.6 && {
     P="$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"
-    [ "$P" = "$ROOT/home/documents/sub" ] \
+    # 2b asserted `$ROOT/home/documents/sub`; the virtual path is the 2e contract.
+    WANT_A6="/home/documents/sub"; [ "$CAGED_2B" = 1 ] || WANT_A6="$ROOT/home/documents/sub"
+    [ "$P" = "$WANT_A6" ] \
         || { echo "[FAIL] [A.6] pwd was: $P"; FAILS=$((FAILS+1)); }
 }
 must_exist_inside A.6 "$ROOT/home/documents/sub/marker-sub.txt"
 run_line A.7 /home/documents sh -c 'pwd'
 expect_ran A.7 && {
-    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "$ROOT/home/documents" ] \
+    WANT_A7="/home/documents"; [ "$CAGED_2B" = 1 ] || WANT_A7="$ROOT/home/documents"
+    [ "$(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')" = "$WANT_A7" ] \
         || { echo "[FAIL] [A.7] pwd was: $(printf '%s' "$LAST_CHILD_STDOUT" | tr -d '\n')"; FAILS=$((FAILS+1)); }
 }
 
@@ -306,9 +374,21 @@ expect_ran C.5 && {
 }
 run_line C.6 /home/work sh -c 'kill -9 $$'
 expect_ran C.6 && {
-    printf '%s\n' "$LAST_OUT" | head -1 | grep -q 'status=signal 9' \
-        && echo "  [ok  ] killed by SIGKILL reported as signal 9, not exit 0" \
-        || { echo "[FAIL] [C.6] signal collapsed/wrong: $(printf '%s\n' "$LAST_OUT" | head -1)"; FAILS=$((FAILS+1)); }
+    head1="$(printf '%s\n' "$LAST_OUT" | head -1)"
+    if [ "$CAGED_2B" = 1 ]; then
+        # Measured 26 Sep 2026: inside a cage the death signal is NOT recoverable.
+        # The cage program reports the child's status in shell encoding and
+        # normalises it — `kill -9 $$` and `exit 137` both come back as 137 — so a
+        # caged run cannot distinguish them. Recorded as a LIMIT of the phase
+        # (shell README), not presented as the signal.
+        printf '%s\n' "$head1" | grep -q 'status=exit 137' \
+            && echo "  [ok  ] C.6 caged: the death signal is normalised to exit 137 (recorded limit; 2b's uncaged form reports signal 9)" \
+            || { echo "[FAIL] [C.6] caged signal reporting unexpected: $head1"; FAILS=$((FAILS+1)); }
+    else
+        printf '%s\n' "$head1" | grep -q 'status=signal 9' \
+            && echo "  [ok  ] killed by SIGKILL reported as signal 9, not exit 0" \
+            || { echo "[FAIL] [C.6] signal collapsed/wrong: $head1"; FAILS=$((FAILS+1)); }
+    fi
 }
 run_line C.7 /home/work sh -c 'true'
 expect_ran C.7 && {
@@ -378,11 +458,21 @@ expect_ran D.1 && {
 run_line D.2 /home/work sh -c 'env | sort'
 expect_ran D.2 && {
     BAD=0
+    # Caged, the permitted set is 2e's five (PATH HOME TERM LANG TMPDIR) plus what
+    # the shell and glibc add (PWD SHLVL _). Uncaged it is 2b's three. Either way the
+    # set is CLOSED and nothing else may appear — that is what this line is for.
     printf '%s\n' "$LAST_CHILD_STDOUT" | while IFS= read -r kv; do
-        case "$kv" in
-            HOME=*|PATH=*|TMPDIR=*|PWD=*|SHLVL=*|_=*|'') : ;;
-            *) echo "  leaked: $kv" ;;
-        esac
+        if [ "$CAGED_2B" = 1 ]; then
+            case "$kv" in
+                HOME=*|PATH=*|TMPDIR=*|TERM=*|LANG=*|PWD=*|SHLVL=*|_=*|'') : ;;
+                *) echo "  leaked: $kv" ;;
+            esac
+        else
+            case "$kv" in
+                HOME=*|PATH=*|TMPDIR=*|PWD=*|SHLVL=*|_=*|'') : ;;
+                *) echo "  leaked: $kv" ;;
+            esac
+        fi
     done | tee /tmp/atrium-2b-d2-leaks-$$ | grep -q . && BAD=1
     rm -f /tmp/atrium-2b-d2-leaks-$$
     # PWD/SHLVL/_ are synthesised by sh itself from an empty environ, not
@@ -403,8 +493,24 @@ expect_ran D.3 && {
 }
 run_line D.4 /home/work sh -c 'touch "$HOME/homefile"'
 expect_ran D.4; must_exist_inside D.4 "$ROOT/homefile"; must_not_exist "$OUTSIDE/homefile"
-run_line D.5 /home/work sh -c 'touch "$TMPDIR/tmpfile"'
-expect_ran D.5; must_exist_inside D.5 "$ROOT/tmpfile"; must_not_exist "$OUTSIDE/tmpfile"
+# D.5: a program's temporary directory. Under 2e TMPDIR is set to the cage's own
+# private /tmp, so the file lands in that tmpfs and therefore does NOT appear at the
+# real root (a tmpfs created inside the namespace dies with it). What must hold is
+# that it is WRITABLE and that nothing reaches the host. Under 2b, TMPDIR pointed at
+# the root and the file appeared at $ROOT/tmpfile.
+run_line D.5 /home/work sh -c 'echo "TMPDIR=$TMPDIR"; touch "$TMPDIR/tmpfile" || echo "TMPDIR NOT WRITABLE"'
+if [ "$CAGED_2B" = 1 ]; then
+    expect_ran D.5 && {
+        printf '%s' "$LAST_CHILD_STDOUT" | grep -q '^TMPDIR=/tmp$' \
+            && echo "  [ok  ] D.5 TMPDIR is the cage's own /tmp" \
+            || { echo "[FAIL] [D.5] TMPDIR was: $(printf '%s' "$LAST_CHILD_STDOUT" | head -1)"; FAILS=$((FAILS+1)); }
+        printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'NOT WRITABLE' \
+            && { echo "[FAIL] [D.5] TMPDIR was not writable"; FAILS=$((FAILS+1)); } || true
+        must_not_exist "/tmp/tmpfile"
+    }
+else
+    expect_ran D.5; must_exist_inside D.5 "$ROOT/tmpfile"; must_not_exist "$OUTSIDE/tmpfile"
+fi
 run_line D.6a /home/work sh -c 'env | sort'
 E1="$LAST_CHILD_STDOUT"
 ATRIUM_2B_JUNK=junk-value run_line D.6b /home/work sh -c 'env | sort'
