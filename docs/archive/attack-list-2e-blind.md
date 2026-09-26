@@ -87,3 +87,57 @@ Test plan only — none of these have been executed. Each "Expected" states what
 1. Do real work: `cd / && mkdir -p work && printf 'x\n' > work/a.txt && cat work/a.txt && /bin/sh -c 'echo ok' && ls /usr/bin | head`. Expected: creating, reading, and running scripts inside the environment root must succeed normally; the read-only attachments leave standard tools runnable; only paths outside the root are gone.
 2. Confirm the allowed direction: `cd / && echo marker > marker.txt`, then on the computer check the environment root for `marker.txt` with matching content. Expected: the file must appear at `<env-root>/marker.txt` — the one required crossing, root-ward.
 3. Force an unbuildable sandbox (temporarily hide the bubblewrap binary or pass a bogus root path) and run `touch should-not-exist`. Expected: the runner must refuse with a specific reason and non-zero status; the probe file must never exist anywhere; nothing may run unsandboxed.
+
+## Found by a second round of probes (author, 26 Sep 2026) — a real-path DISCLOSURE
+
+The 12 blind items and the author's own list both missed this. It is **not an escape** —
+every reach-out test held — it is an information leak of the kind 2e's own promise covers.
+
+`crates/shell/README.md` and `attack-list-2b.md` §A.8 both say the root's real path must
+become unlearnable, and that closing it is "2e's to close". `pwd` was closed by making the
+view virtual. `mountinfo` re-discloses it:
+
+```
+$ cat /proc/self/mountinfo          # inside the cage
+2058 809 0:27 /atrium-mountinfo / rw,nosuid,nodev master:3 - tmpfs tmpfs ...
+2061 2058 0:34 /@/usr /usr ro,... - btrfs /dev/nvme0n1p3 rw,...,subvolid=256,subvol=/@
+```
+
+Measured, root at `/dev/shm/atrium-mountinfo`:
+
+| probe | observed |
+|---|---|
+| `grep atrium-mountinfo /proc/self/mountinfo` | **1 hit** — the root's real directory name |
+| the same in `/proc/1/mountinfo` | **1 hit** |
+| `grep atrium-mountinfo /proc/mounts`, `/proc/self/mounts` | 0 hits |
+| `grep atrium-mountinfo /proc/self/maps` | 0 hits |
+| host block device / btrfs subvolume in `mountinfo` and `/proc/mounts` | **`nvme0n1p3`, `/@`** |
+| `ls -l /dev/nvme0n1p3` inside | does not exist |
+| `head -c 16 /dev/nvme0n1p3` inside | does not exist |
+| the root's path in atrium's own `REFUSE` line | **0 hits** — that assertion still holds |
+| `pwd` inside | `/home/work` — closed |
+
+**Cause, and why it is a design point rather than a slip.** The mount's root field reads
+`/atrium-mountinfo` because the environment root is a *subdirectory of an already-mounted
+tmpfs* (`/dev/shm`). The kernel reports the path of the mount's root within its source
+filesystem. Any root that is a subdirectory of some existing mount will do this.
+
+**What it is worth, stated plainly:** nothing outside the root becomes reachable. What leaks
+is the root's directory name and the host's disk identity (`nvme0n1p3`, a btrfs subvolume id)
+— reconnaissance, and a direct failure of the documented "the agent never learns the real
+path exists" promise. It is the class the author's own list already tracks as
+`!! HOST PATH DISCLOSED` (§F.9), so the vocabulary exists; the mechanism does not close it.
+
+**Candidate fixes, none applied** (they change the root-mount design, and the phase is
+blocked on the 2b decision):
+
+1. Make the root the root of its own mount rather than a subdirectory of one, so the root
+   field reads `/` — e.g. a dedicated tmpfs mounted at the root path.
+2. A private `/proc` that hides the mount table. `--proc /proc` already creates a fresh
+   procfs and does **not** suppress this, because `mountinfo` reports the namespace's mount
+   table, which is where the bind mounts live.
+3. Accept and document it — which would require correcting `README.md`, `attack-list-2b.md`
+   §A.8 and the 2e decision text, because they currently over-claim.
+
+Whichever is chosen, the test belongs in `cage_tests.rs` beside the `pwd` test: run
+`grep <root-basename> /proc/self/mountinfo` inside and assert no hit.
