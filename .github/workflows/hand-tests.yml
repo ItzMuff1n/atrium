@@ -146,6 +146,24 @@ jobs:
             echo "cage: *** WARNING: no bubblewrap — hand-test-2e.sh will only"
             echo "cage: exercise its fail-closed paths, not the cage. ***"
           fi
+
+          # Phase 2e binds /usr, /bin, /sbin, /lib, /lib64 read-only and NOTHING
+          # else. On a Debian-family host the standard-tool symlinks route through
+          # /etc/alternatives, which is therefore absent inside the cage: measured
+          # on this job's runner 26 Sep 2026, `awk` failed inside the cage while it
+          # works on a host where the link is relative (`awk -> gawk`) and so stays
+          # within /usr. This is stated loudly because hand-test-2e's C.4 exercises
+          # `awk`, and because a user command relying on alternatives-based tool
+          # resolution will fail inside the cage the same way.
+          for tool in awk cc c++; do
+            link="$(command -v "$tool" 2>/dev/null || true)"
+            [ -n "$link" ] || continue
+            case "$(readlink -f "$link" 2>/dev/null)" in
+              /etc/alternatives/*)
+                echo "cage: NOTE: \`$tool\` resolves through /etc/alternatives, which the"
+                echo "cage:       cage does not bind — it will NOT work inside the cage." ;;
+            esac
+          done
           echo
 
           FAILED=0

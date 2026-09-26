@@ -55,6 +55,13 @@ OKS=0
 FAILS=0
 CAGED_LINES=0
 
+# The HOST's home directory, whatever it is on this machine: /home/muffin on the
+# developer machine, /home/runner on CI. Hard-coding one path made a line fail on the
+# runner for a reason that had nothing to do with the cage (found on run 36265509264,
+# where it printed "THE HOST HOME DIRECTORY IS GONE" on a runner whose home is fine).
+# Used by A.3, E.3 and the final integrity check.
+HOSTHOME="${HOME:-/root}"
+
 say()  { printf '%s\n' "$*"; }
 ok()   { printf '  [ok  ] %s\n' "$*"; }
 bad()  { printf '  [FAIL] %s\n' "$*"; FAILS=$((FAILS+1)); }
@@ -263,16 +270,16 @@ check_outside A.2
 # That is a real trap — measured, `rm -rf /home/muffin` returns rc=0 with no
 # output whatever happens — and it is why the destructive line (A.2) is paired
 # with this read-only one.
-caged_line A.3 /home/work sh -c 'ls /home/muffin 2>&1; echo rc=$?'
+# The host's home directory, spelled as it is on THIS machine.
+caged_line A.3 /home/work sh -c 'ls "$1" 2>&1; echo rc=$?' _ "$HOSTHOME"
 if [ "$CAGED" = 1 ]; then
     if child_stdout "$LAST_OUT" | grep -qi 'no such file'; then
-        ok "[A.3] the host's /home/muffin does not exist inside the cage"
+        ok "[A.3] the host's home ($HOSTHOME) does not exist inside the cage"
     else
-        bad "[A.3] /home/muffin is reachable inside the cage: $(child_stdout "$LAST_OUT" | head -1)"
+        bad "[A.3] $HOSTHOME is reachable inside the cage: $(child_stdout "$LAST_OUT" | head -1)"
     fi
 fi
-[ -d /home/muffin ] || bad "[A.3] THE HOST HOME DIRECTORY IS GONE"
-[ -d /home/muffin ] || bad "[A.2/A.3] THE HOST HOME DIRECTORY IS GONE — this is catastrophic"
+[ -d "$HOSTHOME" ] || bad "[A.3] THE HOST HOME DIRECTORY IS GONE ($HOSTHOME)"
 
 caged_line A.4 /home/work sh -c 'cd /; while :; do cd ..; pwd; done 2>/dev/null | head -3'
 if [ "$CAGED" = 1 ]; then
@@ -625,11 +632,11 @@ if [ "$CAGED" = 1 ]; then
     fi
 fi
 
-caged_line E.3 /home/work sh -c 'ls /home/muffin 2>&1; echo rc=$?'
+caged_line E.3 /home/work sh -c 'ls "$1" 2>&1; echo rc=$?' _ "$HOSTHOME"
 if [ "$CAGED" = 1 ]; then
     child_stdout "$LAST_OUT" | grep -qi 'no such file' \
-        && ok "[E.3] the HOST's /home/muffin does not exist inside the cage" \
-        || bad "[E.3] /home/muffin is reachable inside the cage: $(child_stdout "$LAST_OUT" | head -1)"
+        && ok "[E.3] the HOST's home ($HOSTHOME) does not exist inside the cage" \
+        || bad "[E.3] $HOSTHOME is reachable inside the cage: $(child_stdout "$LAST_OUT" | head -1)"
 fi
 
 caged_line E.4 /home/work sh -c 'for d in /root /var /opt /srv /boot /media /mnt; do [ -e "$d" ] && echo "PRESENT $d"; done; echo done'
@@ -749,7 +756,7 @@ say "=== independent checks, over the whole run ==="
 [ "$(cksum /etc/passwd 2>/dev/null) $(stat -c '%Y' /etc/passwd 2>/dev/null)" = "$PASSWD_BEFORE" ] \
     && ok "the host /etc/passwd is unchanged" \
     || bad "!! HOST /etc/passwd CHANGED over the run"
-[ -d /home/muffin ] && ok "the host home directory still exists" || bad "!! THE HOST HOME DIRECTORY IS GONE"
+[ -d "$HOSTHOME" ] && ok "the host home directory still exists ($HOSTHOME)" || bad "!! THE HOST HOME DIRECTORY IS GONE ($HOSTHOME)"
 
 # ---------------------------------------------------------------------------
 rm -rf "$ROOT" "$OUTSIDE"
