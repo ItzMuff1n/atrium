@@ -1145,3 +1145,21 @@ hands-on" is a literal recount of a run he performed — nothing about it change
 rule applies to the **next** scripted phase onward: from there, an entry in that section
 records his **approval of the evidence** rather than a run he performed, and must say so
 in as many words, so a later session cannot read an approval as a re-run.
+
+## The `approvals.deny` relative-path gap (accepted as known, 26 Sep 2026)
+
+The 17 deny patterns in `~/.hermes/config.yaml` match the path only when the command
+string spells it out — `~/vibecodeprojects/atrium` or `/home/*`. A command that `cd`s
+first and then names a relative path (`rm -rf crates/watcher/target`) is **not** denied;
+it asks for approval instead. Measured, not inferred, with `hermes approvals test`:
+that spelling returns ask-approval (exit 2), the same command with `~` or
+`/home/muffin/...` returns user-deny (exit 3).
+
+**Muffin's decision, 26 Sep 2026: accepted as known, not fixed.** The ask-approval it
+falls back to is still a gate — nothing ran without approval — so the gap narrows a
+convenience rather than opening a hole. Recorded here so a later session does not
+rediscover it and treat it as new, and does not "fix" the patterns by adding relative
+spellings, which would not help: a relative path is only meaningful next to the `cd`
+that precedes it, which a pattern cannot see.
+
+Reported in full in issue #76 §2.
