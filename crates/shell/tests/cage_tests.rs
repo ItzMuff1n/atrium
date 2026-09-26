@@ -20,7 +20,7 @@
 
 use std::path::{Path, PathBuf};
 
-use atrium_shell::cage::CageError;
+use atrium_shell::cage::{CageError, SpawnReason};
 use atrium_shell::{run, ExitStatus, RunError, RunOptions, VirtualPath};
 
 /// A root on a filesystem not shared with `/home`, `/tmp` or `/`.
@@ -118,6 +118,151 @@ fn a_write_from_inside_never_lands_in_the_hosts_tmp() {
 }
 
 #[test]
+fn a_program_that_cannot_start_inside_the_cage_refuses_with_its_own_distinct_reason() {
+    // attack-list-2b.md §N.1-N.4, and Muffin's decision of 26 Sep 2026: the three
+    // problems stay distinguishable, the wording is ATRIUM's, and it is never the
+    // cage program's `execvp ...` sentence nor an exit code of 127.
+    //
+    // How this works, so the test is not mistaken for luck: the cage program
+    // writes no `exit-code` line when it could not exec the command, and atrium
+    // then asks the cage's own filesystem a direct question (cage::SpawnReason).
+    // Nothing is parsed out of anyone's error text.
+    let root = isolated_root("spawn");
+    std::fs::write(root.join("home/work/notexec.txt"), b"x\n").expect("the fixture file");
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(
+        root.join("home/work/notexec.txt"),
+        std::fs::Permissions::from_mode(0o644),
+    );
+    std::fs::create_dir_all(root.join("home/work/sub")).expect("the fixture directory");
+
+    let mut reasons: Vec<String> = Vec::new();
+    for (program, want) in [
+        ("./no-such-program-2e", SpawnReason::ProgramNotFound),
+        ("./notexec.txt", SpawnReason::NotExecutable),
+        ("./sub", SpawnReason::IsADirectory),
+    ] {
+        let p = program.to_string();
+        match run(&root, &vp("/home/work"), &p, &[], &RunOptions::default()) {
+            Err(RunError::SpawnInsideCage {
+                program: got,
+                reason,
+            }) => {
+                assert_eq!(got, program, "the refusal must name the program asked for");
+                assert_eq!(
+                    reason, want,
+                    "{program} was classified {reason:?}, expected {want:?}"
+                );
+                // The wording is atrium's own: it must not carry the cage
+                // program's phrasing, which reuses one sentence for all three.
+                let msg = reason.wording();
+                assert!(
+                    !msg.contains("execvp"),
+                    "the reason is the cage program's words, not atrium's: {msg:?}"
+                );
+                reasons.push(msg.to_string());
+            }
+            Err(RunError::Spawn { reason, .. }) => panic!(
+                "a command that cannot start inside the cage was reported as the RUNNER's own \
+                 spawn failure, so the cage program's status was not consulted: {reason}"
+            ),
+            Err(other) => panic!("{program}: unexpected error {other}"),
+            Ok(o) => panic!(
+                "{program} RAN and reported {:?} -- a program that cannot start must not run",
+                o.status
+            ),
+        }
+    }
+    // §N.4: three problems, three sentences.
+    let mut unique = reasons.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(
+        unique.len(),
+        3,
+        "the three spawn refusals are not distinguishable from the refusal alone: {reasons:?}"
+    );
+    cleanup(&root);
+}
+
+#[test]
+fn our_own_time_limit_is_reported_as_a_timeout_and_never_as_a_signal() {
+    // §C.6, Muffin's decision of 26 Sep 2026: `timed-out` means OUR timer fired.
+    //
+    // What this can and cannot show, stated honestly. Inside a cage the process
+    // the runner waits on is the cage program, and it NORMALISES the command's
+    // death: measured 26 Sep 2026, `kill -9 $$` inside and `exit 137` inside both
+    // come back reported identically as 137. So a command's own death signal is
+    // not recoverable from inside a cage — that is bwrap's behaviour, not atrium's
+    // choice, and it is recorded in README.md as a limit rather than hidden. What
+    // IS testable, and what this asserts, is that the runner never claims OUR kill
+    // was a timeout it did not perform, and never claims a timeout when the command
+    // ended on its own.
+    let root = isolated_root("timer");
+
+    // Our timer fires.
+    let opts = RunOptions {
+        timeout: std::time::Duration::from_millis(400),
+        ..Default::default()
+    };
+    let p = "sh".to_string();
+    let a = vec!["-c".to_string(), "exec sleep 60".to_string()];
+    match run(&root, &vp("/home/work"), &p, &a, &opts) {
+        Ok(o) => assert_eq!(
+            o.status,
+            ExitStatus::TimedOut,
+            "our own time limit must be reported as a timeout"
+        ),
+        Err(e) => panic!("sleeping past the limit must time out, not error: {e}"),
+    }
+
+    // The command ends on its own, well inside the limit.
+    let a = vec!["-c".to_string(), "exit 3".to_string()];
+    match run(&root, &vp("/home/work"), &p, &a, &RunOptions::default()) {
+        Ok(o) => assert_eq!(
+            o.status,
+            ExitStatus::Exited(3),
+            "a command that ended on its own must be reported as its own exit"
+        ),
+        Err(e) => panic!("unexpected error: {e}"),
+    }
+    cleanup(&root);
+}
+
+#[test]
+fn tmpdir_points_inside_the_environment_and_nowhere_else() {
+    // 2b's D.2/D.5, which the cage has to keep: a program is given a temporary
+    // directory, and it is the cage's OWN private /tmp — so a temp file is
+    // writable, is visible to the next run through the root, and never reaches
+    // the host's /tmp (attack-list-2e.md §G.7).
+    let root = isolated_root("tmpdir");
+    let host_marker = format!("/tmp/atrium-2e-tmpdir-{}", std::process::id());
+    let _ = std::fs::remove_file(&host_marker);
+    if let Some(o) = run_caged(
+        &root,
+        "/home/work",
+        &format!(
+            "printf '%s' \"$TMPDIR\"; touch \"$TMPDIR/tmpfile\"; echo; ls -1 /tmp | tr '\\n' ' '"
+        ),
+    ) {
+        let printed = out_text(&o);
+        assert!(
+            printed.contains("/tmp"),
+            "TMPDIR must be set and point at the cage's own /tmp, got: {printed:?}"
+        );
+        // Written inside the cage's tmpfs, so it is NOT at the root's /tmp on the
+        // host (a tmpfs made inside the namespace dies with it) and NOT in the
+        // host's /tmp. What it must not do is appear anywhere outside.
+        assert!(
+            !Path::new(&host_marker).exists(),
+            "a temp file escaped to the host"
+        );
+    }
+    let _ = std::fs::remove_file(&host_marker);
+    cleanup(&root);
+}
+
+#[test]
 fn the_hosts_home_is_unreachable_and_the_roots_own_home_is_present() {
     let root = isolated_root("home");
     if let Some(o) = run_caged(
@@ -165,11 +310,17 @@ fn the_environment_is_exactly_the_allowlist() {
                 "{forbidden} leaked into the cage: {printed:?}"
             );
         }
-        // Every name present must be one of the permitted seven. PWD and SHLVL
+        // Every name present must be one of the permitted eight. PWD and SHLVL
         // are added by the shell and `_` by glibc's `env`; they are permitted by
         // name, with that reason, and nothing else is
         // (attack-list-2e.md §E.2).
-        let permitted = ["PATH", "HOME", "TERM", "LANG", "PWD", "SHLVL", "_"];
+        //
+        // TMPDIR is the fifth ALLOWED_ENV name (26 Sep 2026). It is here rather
+        // than absent on purpose: 2b's D.2 lists it and D.5 asserts that a file
+        // written to `$TMPDIR` lands inside the environment root.
+        let permitted = [
+            "PATH", "HOME", "TERM", "LANG", "TMPDIR", "PWD", "SHLVL", "_",
+        ];
         for line in printed.lines() {
             let name = line.split('=').next().unwrap_or("");
             assert!(

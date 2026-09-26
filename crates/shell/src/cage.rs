@@ -26,19 +26,33 @@
 
 use std::path::{Path, PathBuf};
 
-/// The four environment variables the command is given. Nothing else reaches
-/// it (`attack-list-2e.md` §E, requirement A of 26 Sep 2026).
+/// The environment variables the command is given. Nothing else reaches it
+/// (`attack-list-2e.md` §E, requirement A of 26 Sep 2026).
 ///
 /// A bare bubblewrap cage inherits the **host's** environment, measured
 /// 26 Sep 2026: `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`, `GH_AUDIT_TOKEN`
 /// and the whole `HERMES_*` set were all visible to the command. Clearing it
-/// and passing back a fixed four is the difference between a cage and a window.
-pub const ALLOWED_ENV: [(&str, &str); 4] = [
+/// and passing back a fixed list is the difference between a cage and a window.
+///
+/// `TMPDIR` is the fifth name, added 26 Sep 2026 at Muffin's direction. It
+/// points at `/tmp` **inside** the cage, which is that cage's own private
+/// tmpfs — so a program asking for a temporary directory gets one, and nothing
+/// it writes there reaches the host's `/tmp`. (An earlier reading that 2b did
+/// not require it was wrong: `hand-test-2b.sh` D.2 lists `TMPDIR` and D.5
+/// asserts `$TMPDIR/tmpfile` lands inside the root.)
+pub const ALLOWED_ENV: [(&str, &str); 5] = [
     ("PATH", "/usr/bin:/bin"),
     ("HOME", "/"),
     ("TERM", "dumb"),
     ("LANG", "C.UTF-8"),
+    ("TMPDIR", "/tmp"),
 ];
+
+/// The file descriptor the cage program writes its structured status to. An
+/// odd number, as `systemd` and `bubblewrap` conventionally use, so it does not
+/// collide with the stdin/stdout/stderr trio. Chosen here and passed to
+/// bubblewrap, never inherited from the caller.
+pub const STATUS_FD: &str = "3";
 
 /// The system directories bound **read-only**, in this order. Measured
 /// necessary: without `/usr` the cage cannot run `python3` or `git` at all, and
@@ -49,6 +63,82 @@ pub const ALLOWED_ENV: [(&str, &str); 4] = [
 /// Read-only is load-bearing: measured, `touch /usr/evil` inside the cage
 /// returns `Read-only file system` and nothing appears at the real `/usr`.
 pub const READ_ONLY_BINDS: [&str; 5] = ["/usr", "/bin", "/sbin", "/lib", "/lib64"];
+
+/// Why a program could not be started **inside** the cage — in atrium's own
+/// words, and never read out of the cage program's error text.
+///
+/// The cage program reports every failed `exec` as one of two sentences
+/// (`execvp <p>: No such file or directory` / `execvp <p>: Permission denied`)
+/// and reuses them for three different problems: a name that does not exist, a
+/// path that is a directory, and a file without the execute bit. atrium's
+/// contract is that those three stay **distinguishable** (`attack-list-2b.md`
+/// §N.1–N.4, which is signed off), so the reason cannot be a `grep` of that
+/// text: it would be atrium's promise implemented in someone else's spelling.
+/// The reason is therefore established by asking the cage's own view of the
+/// filesystem a direct question — exact, and independent of the cage program.
+/// (Muffin's decision, 26 Sep 2026: do not pattern-match the cage's stderr.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnReason {
+    /// No such path, and nothing by that name on the cage's `PATH`.
+    ProgramNotFound,
+    /// The path is a directory.
+    IsADirectory,
+    /// The path exists but is not a regular file.
+    NotARegularFile,
+    /// A regular file without the execute bit.
+    NotExecutable,
+    /// The cage could not answer the question. Reported as unknown rather than
+    /// guessed, and it is still a refusal: nothing ran.
+    Unclassified,
+}
+
+impl SpawnReason {
+    /// The sentence for the refusal line. Distinct per reason — an operator
+    /// reading three refusals must be able to tell them apart without running
+    /// anything, which is the whole of §N.4.
+    pub fn wording(self) -> &'static str {
+        match self {
+            SpawnReason::ProgramNotFound => {
+                "there is no program by that name inside the environment, and none on its PATH"
+            }
+            SpawnReason::IsADirectory => "it is a directory inside the environment, not a program",
+            SpawnReason::NotARegularFile => {
+                "it exists inside the environment but is not a regular file, so it cannot be run"
+            }
+            SpawnReason::NotExecutable => "it exists inside the environment but is not executable",
+            SpawnReason::Unclassified => {
+                "it could not be started, and the environment could not establish why"
+            }
+        }
+    }
+}
+
+/// The question `Cage::classify_program` asks, run by `/bin/sh` **inside the
+/// cage**. It can only see the cage's own filesystem, which is what makes the
+/// answer trustworthy; the host is not reachable from where it runs.
+///
+/// `$1` is the program name exactly as the caller wrote it (so both a bare name
+/// to be looked up on `PATH` and a path are handled). The answer is one token
+/// on stdout.
+///
+/// The order is load-bearing. `-e` follows symlinks, so a symlink pointing
+/// nowhere is `-e` false and `-L` true — a name that cannot be executed, i.e.
+/// the same outcome as not existing, which is how it is reported. Directories
+/// are checked first because `-f` is false for them and "not a regular file"
+/// would be a true but useless answer.
+const CLASSIFY_SCRIPT: &str = r#"
+p="$1"
+if [ -d "$p" ]; then printf DIR
+elif [ -e "$p" ]; then
+    if [ ! -f "$p" ]; then printf NOTREGULAR
+    elif [ ! -x "$p" ]; then printf NOTEXEC
+    else printf OK
+    fi
+elif [ -L "$p" ]; then printf MISSING
+elif command -v "$p" >/dev/null 2>&1; then printf OK
+else printf MISSING
+fi
+"#;
 
 /// Why a cage could not be established. Every variant is a **refusal with a
 /// reason**; none of them is a fallback.
@@ -206,6 +296,12 @@ pub fn check_root_isolated(root: &Path) -> Result<(), CageError> {
 #[derive(Debug, Clone)]
 pub struct Cage {
     program: PathBuf,
+    /// Everything that makes it a cage, up to but **not** including the `--`
+    /// that introduces the command. Held so the same cage can be asked a
+    /// question about its environment with a different command inside it —
+    /// see `classify_program`.
+    prefix: Vec<String>,
+    /// `prefix`, then `--`, then the caller's program and its arguments.
     args: Vec<String>,
 }
 
@@ -215,6 +311,89 @@ impl Cage {
     }
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    /// This cage with a DIFFERENT command inside it, and **without** the
+    /// structured-status request.
+    ///
+    /// `--json-status-fd` is dropped on purpose and it is the only thing dropped.
+    /// It is a *reporting* option, not part of the confinement: dropping it changes
+    /// nothing about which namespaces exist, what is bound where, or what the
+    /// environment holds. Keeping it would be worse than wrong — the question
+    /// below does not read that descriptor, and a cage told to write its status to
+    /// a descriptor nobody has connected BLOCKS forever. Measured, 26 Sep 2026:
+    /// a cage with `--json-status-fd` pointed at a pipe with no reader never
+    /// returns, and that is exactly how the first version of this hung.
+    ///
+    /// So the same cage is used for the question, minus the reporting channel the
+    /// question has no use for. `the_question_differs_from_the_cage_only_by_the_status_request`
+    /// asserts that this is the only difference.
+    pub fn args_with(&self, program: &str, argv: &[String]) -> Vec<String> {
+        let mut a: Vec<String> = Vec::with_capacity(self.prefix.len() + argv.len() + 2);
+        let mut skip_next = false;
+        for x in &self.prefix {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if x == "--json-status-fd" {
+                skip_next = true;
+                continue;
+            }
+            a.push(x.clone());
+        }
+        a.push("--".to_string());
+        a.push(program.to_string());
+        a.extend(argv.iter().cloned());
+        a
+    }
+
+    /// Ask this cage's own view of the filesystem why `program` cannot be
+    /// started. Returns atrium's reason, never the cage program's sentence.
+    ///
+    /// The command here is a `sh` that prints one token and nothing else, so it
+    /// cannot be confused with the caller's command — the caller's command is
+    /// not run at all. It runs **in the same cage**, which is what makes the
+    /// answer describe what the command would actually have seen: a name that
+    /// exists on the host but not inside answers "not found", correctly.
+    ///
+    /// A failure to ask is `Unclassified`, and a refusal is still a refusal:
+    /// nothing ran either way. `"OK"` maps to `Unclassified` on purpose — it
+    /// means the program *would* have started, so the real cause is something
+    /// this question cannot see, and naming one of the three would be a guess.
+    pub fn classify_program(&self, program: &str) -> SpawnReason {
+        use std::process::{Command, Stdio};
+
+        let argv = vec![
+            "-c".to_string(),
+            CLASSIFY_SCRIPT.to_string(),
+            // `$0` for the helper shell; never used, but it must not be the
+            // program name or the argument positions shift.
+            "atrium-classify".to_string(),
+            program.to_string(),
+        ];
+        // stdin is /dev/null: a cage that inherited this process's stdin could be
+        // stopped by SIGTTIN reading it if that stdin is a terminal. `--new-session`
+        // makes that unlikely rather than impossible, and the cost of ruling it out
+        // is one call.
+        let out = Command::new(&self.program)
+            .args(self.args_with("/bin/sh", &argv))
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            // The helper's own diagnostics are not the reason; the token is.
+            .stderr(Stdio::null())
+            .output();
+        match out {
+            Ok(o) => match String::from_utf8_lossy(&o.stdout).trim() {
+                "MISSING" => SpawnReason::ProgramNotFound,
+                "DIR" => SpawnReason::IsADirectory,
+                "NOTREGULAR" => SpawnReason::NotARegularFile,
+                "NOTEXEC" => SpawnReason::NotExecutable,
+                _ => SpawnReason::Unclassified,
+            },
+            Err(_) => SpawnReason::Unclassified,
+        }
     }
 }
 
@@ -255,6 +434,15 @@ pub fn build(
     // Clear the environment. Without this the host's variables reach the
     // command, measured (attack-list-2e.md §E).
     push("--clearenv");
+
+    // The cage program's structured status, on fd 3. This is the only honest
+    // way to tell "the command ran and ended" from "the command never started":
+    // when an `exec` fails the cage program writes no `exit-code` line, and the
+    // command's own exit status is therefore unavailable. Reading that from the
+    // cage program's error text would be atrium's contract implemented in
+    // someone else's spelling (Muffin's decision, 26 Sep 2026).
+    push("--json-status-fd");
+    push(STATUS_FD);
 
     // The four allowed variables, and nothing else.
     for (k, v) in ALLOWED_ENV {
@@ -304,15 +492,23 @@ pub fn build(
     push("--chdir");
     push(virtual_cwd);
 
+    // Everything above makes it a cage and is independent of the command, so it
+    // is kept: `classify_program` reuses exactly this prefix to ask the same
+    // cage a question. The builder closure is dropped first so its borrow of `a`
+    // has ended; the rest is pushed directly.
+    drop(push);
+    let prefix = a.clone();
+
     // The command itself and its arguments, unaltered.
-    push("--");
-    push(program);
+    a.push("--".to_string());
+    a.push(program.to_string());
     for arg in args {
-        push(arg);
+        a.push(arg.clone());
     }
 
     Ok(Cage {
         program: cage_program,
+        prefix,
         args: a,
     })
 }
@@ -322,13 +518,132 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_allowlist_is_exactly_four_names_and_never_a_path_to_the_host() {
-        assert_eq!(ALLOWED_ENV.len(), 4);
+    fn the_allowlist_is_exactly_the_five_names_and_never_a_path_to_the_host() {
+        assert_eq!(ALLOWED_ENV.len(), 5);
         let names: Vec<&str> = ALLOWED_ENV.iter().map(|(k, _)| *k).collect();
-        assert_eq!(names, vec!["PATH", "HOME", "TERM", "LANG"]);
+        assert_eq!(names, vec!["PATH", "HOME", "TERM", "LANG", "TMPDIR"]);
         // HOME must be the cage's own root, not the host's home.
         let home = ALLOWED_ENV.iter().find(|(k, _)| *k == "HOME").unwrap().1;
         assert_eq!(home, "/");
+        // TMPDIR must be inside the cage, never a host path: the cage's own
+        // /tmp is a private tmpfs, so a program's temporary files cannot reach
+        // the host's /tmp (attack-list-2e.md §G.7; 2b's D.5 expects TMPDIR).
+        let tmp = ALLOWED_ENV.iter().find(|(k, _)| *k == "TMPDIR").unwrap().1;
+        assert_eq!(tmp, "/tmp");
+    }
+
+    #[test]
+    fn every_spawn_reason_has_its_own_wording() {
+        // §N.4: the three problems must be tellable apart from the refusal line
+        // alone. Compared pairwise, so two reasons sharing a sentence fails
+        // even if a third is unique.
+        let all = [
+            SpawnReason::ProgramNotFound,
+            SpawnReason::IsADirectory,
+            SpawnReason::NotARegularFile,
+            SpawnReason::NotExecutable,
+            SpawnReason::Unclassified,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(
+                    a.wording(),
+                    b.wording(),
+                    "two spawn reasons share one sentence, so a refusal cannot be told from another"
+                );
+            }
+            assert!(
+                !a.wording().is_empty(),
+                "a spawn reason with no wording would print an empty reason"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cage_asks_for_structured_status_and_never_shares_the_network() {
+        let root = Path::new("/run/user/1000");
+        if !root.exists() {
+            return;
+        }
+        let Ok(cage) = build(root, "/home/work", "/bin/echo", &["hi".to_string()]) else {
+            return;
+        };
+        let a = cage.args();
+        // The absence of an exit-code line is how a never-started command is
+        // detected, so the fd must actually be requested.
+        let fd_at = a
+            .iter()
+            .position(|x| x == "--json-status-fd")
+            .expect("--json-status-fd must be requested");
+        assert_eq!(a.get(fd_at + 1).map(String::as_str), Some(STATUS_FD));
+        assert!(a.iter().any(|x| x == "--unshare-all"));
+        assert!(!a.iter().any(|x| x == "--share-net"));
+    }
+
+    #[test]
+    fn the_question_differs_from_the_cage_only_by_the_status_request() {
+        // `classify_program` must not build a second, possibly different cage: it
+        // takes the prefix of the cage that was actually built, minus exactly one
+        // pair -- `--json-status-fd <n>`. Keeping those two words makes the
+        // question hang, because nothing reads that descriptor (measured).
+        //
+        // This asserts the narrowness of that subtraction: strip the pair from the
+        // cage and the remainder must be IDENTICAL. If someone later adds a bind,
+        // a namespace or an environment variable on one side only, this fails.
+        let root = Path::new("/run/user/1000");
+        if !root.exists() {
+            return;
+        }
+        let Ok(cage) = build(root, "/home/work", "/bin/echo", &["hi".to_string()]) else {
+            return;
+        };
+        let argv = vec!["-c".to_string(), "x".to_string(), "y".to_string()];
+        let asked = cage.args_with("/bin/sh", &argv);
+        let split = |v: &[String]| {
+            v.iter()
+                .position(|x| x == "--")
+                .expect("the command separator is present")
+        };
+        // The cage's own prefix with the status request removed.
+        let head = &cage.args()[..split(cage.args())];
+        let expected: Vec<String> = {
+            let mut v = Vec::new();
+            let mut skip = false;
+            for x in head {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                if x == "--json-status-fd" {
+                    skip = true;
+                    continue;
+                }
+                v.push(x.clone());
+            }
+            v
+        };
+        assert_eq!(
+            &asked[..split(&asked)],
+            &expected[..],
+            "the question must run inside the very same cage, minus only the status request"
+        );
+        // The difference must be real: the cage HAS the request, the question does
+        // not.
+        assert!(head.iter().any(|x| x == "--json-status-fd"));
+        assert!(!asked[..split(&asked)]
+            .iter()
+            .any(|x| x == "--json-status-fd"));
+        assert_eq!(asked[split(&asked) + 1], "/bin/sh");
+        // The confinement is untouched: the root is still bound, the namespaces
+        // still unshared, the network still not shared.
+        for needle in ["--bind", "--unshare-all", "--clearenv"] {
+            assert!(
+                expected.iter().any(|x| x == needle),
+                "the question dropped {needle}, which is confinement"
+            );
+        }
+        assert!(!expected.iter().any(|x| x == "--share-net"));
+        assert!(expected.iter().any(|x| x == root.to_str().unwrap()));
     }
 
     #[test]
