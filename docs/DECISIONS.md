@@ -601,6 +601,75 @@ contains the host step; the host step is 2e's verification, and it is Muffin's t
 watch like every other gate. Until 2e passes, **`run commands` must not be
 exercised by anything autonomous.**
 
+### Phase 2e: bubblewrap, an explicit mount list, and a root that is its own mount point
+
+**Decided 26 Sep 2026. Approved by Muffin in chat the same day.** Four decisions
+and two added requirements, each with its one-line reason. This entry is the
+record; `BUILD-PLAN.md` §2e carries the requirement and the plan issue #87
+carries the measurements.
+
+**1. The cage is bubblewrap, invoked as a system binary, with an explicitly built
+mount list.** *Reason: proven working unprivileged on this machine (0.12.0) and on
+the GitHub runner behind one sysctl (run 36244899076), binding the root at `/`
+makes virtual paths line up exactly as `DESIGN.md` §3.1 defines them, and every
+directory the command can see is a line in our own auditable argument list.*
+
+**2. `--clearenv`, then an explicit allowlist: `PATH`, `HOME`, `TERM`, `LANG`.
+Nothing else.** *Reason: measured — a bare bwrap cage leaks the host's whole
+environment into the command, including `SSH_AUTH_SOCK`, `DBUS_SESSION_BUS_ADDRESS`,
+`GH_AUDIT_TOKEN` and every `HERMES_*` variable, so without this the cage hides less
+than it leaks.* Enforced by its own test: fake `SSH_AUTH_SOCK`, `GH_AUDIT_TOKEN` and
+`HERMES_TEST` set on the host must not appear in `env` inside the cage, and the
+output must contain only allowlisted names.
+
+**3. System folders a real shell needs (`/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`)
+are bound read-only; `/home` and every host path not explicitly bound must not
+exist inside the cage.** *Reason: a cage the sandbox cannot be used in is as broken
+as one that leaks, and "not bound" must mean "not there" rather than "there but
+unreadable".* Enforced by its own tests: `ls /home` inside the cage fails or is
+empty; writing to `/usr` inside the cage fails; and the other-direction check still
+passes — a file created inside the cage appears at the real environment root.
+
+**4. The environment root is its own mount point, provided by Atrium's own
+unprivileged user+mount namespace.** *Reason: an unprivileged user cannot `mount`
+(measured: `must be superuser to use mount`), but can inside a user namespace, where
+a tmpfs at the root path makes a hard link from outside it impossible — measured
+`Invalid cross-device link`, which is 2a's open item L.4 closed by construction
+rather than by a path check.* `run()` refuses a root that is not its own mount
+point, read from `/proc/self/mountinfo` (std-only; no dependency).
+
+**Rejected: `--tmpfs /` as the root.** *Reason: measured — a write inside a private
+tmpfs never appears at the real root, so 2e's own verification line "a file created
+inside appears on the host" cannot pass.*
+
+**Rejected: opening the cage's network to let agents look things up.** *Reason:
+Muffin's requirement is that agents can still search the web; the capability must
+come from a fetch/search tool the loop calls directly, outside bubblewrap, recorded
+as a `fetched` effect — not from a hole in the cage. Added to `BUILD-PLAN.md`
+Phase 5 as its own item; that is now the only route to the network before Phase 9.*
+
+**Rejected: hand-rolled `unshare` + bind mounts.** *Reason: equivalent isolation,
+more code, and a failure mode already hit while probing this phase — bwrap applies
+mounts in order, so binding the root after the system directories silently replaces
+the whole tree.*
+
+**Rejected: Landlock.** *Reason: compiled and active here, so available, but it
+restricts the caller's own access by path rules, and §2e's requirement is explicit
+that a path check is not what is wanted.* **Rejected: a container.** *Reason: a
+daemon, an image and a network stack is a far larger surface than the requirement
+needs, and it still needs the same sysctl.* **Rejected: chroot.** *Reason: needs
+root, and does not stop a process already holding a directory descriptor.*
+
+**Fail closed.** If the cage cannot be established — binary absent, namespaces
+refused, root not its own mount point — the command is **refused with a reason**.
+There is no path that runs a command uncaged.
+
+**Dependency, named for `AGENT-RULES.md` §5.** 2e adds a **system** dependency:
+the `bubblewrap` package, and a one-line `sudo sysctl -w
+kernel.apparmor_restrict_unprivileged_userns=0` in the CI hand-tests job. It is not
+a cargo dependency, so `deny.toml` and the supply-chain gate are unaffected.
+Approved explicitly by Muffin, 26 Sep 2026.
+
 ### Snapshots are a plain copy, not copy-on-write, and the design's own fallback is why
 
 **Decision (14 Sep 2026, Phase 2c).** Snapshotting the environment root copies it.
