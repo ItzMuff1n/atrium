@@ -638,13 +638,46 @@ fi
 hole_line G.2 /home/work sh -c 'ls /'
 if [ "$CAGED" = 1 ]; then
     printf '[CAGED] %-45s %s\n' "G.2: ls /" "$(printf '%s' "$LAST_CHILD_STDOUT" | tr '\n' ' ')"
-    printf '%s' "$LAST_CHILD_STDOUT" | grep -qx 'etc' \
-        && { echo "     [FAIL] a top-level 'etc' is listed inside the cage"; FAILS=$((FAILS+1)); } \
-        || echo "     no top-level host 'etc' in the list"
+    # CHANGED 26 Sep 2026 (Muffin's decision on issue #91, closing #93). This line
+    # used to fail if `etc` appeared at all, because nothing bound it. That is no
+    # longer true: `/etc/alternatives` is bound read-only, so `/etc` must exist
+    # inside the cage as its mount point. The ASSERTION is narrowed to what the
+    # line was always really about -- the HOST's `/etc` must not be reachable --
+    # rather than keeping a check that a Debian-family fix would necessarily break.
+    #
+    # The sharp forms of that are G.3 (`cat /etc/passwd`) and G.4, which follow and
+    # are unchanged. What this adds is the positive statement: /etc contains the
+    # alternatives bind and NOTHING of the host's.
+    if printf '%s' "$LAST_CHILD_STDOUT" | grep -qx 'etc'; then
+        echo "     'etc' is listed — expected since 26 Sep 2026: it is the mount point /etc/alternatives needs"
+    else
+        echo "     [FAIL] no 'etc' inside the cage, but /etc/alternatives is bound — the bind cannot work"
+        FAILS=$((FAILS+1))
+    fi
 else
     printf '[HOLE ] %-45s %s\n' "G.2: ls /" "$(printf '%s\n' "$LAST_OUT" | head -1)"
     printf '%s' "$LAST_CHILD_STDOUT" | grep -q 'etc' \
         && echo "  (G.2 reached the host: / lists host entries)"
+fi
+
+# G.2b: what is INSIDE the cage's /etc. Added with the alternatives bind. The bind
+# must give /etc/alternatives and nothing else of the host's -- if the host's real
+# /etc ever leaks wholesale, this is the line that says so first.
+hole_line G.2b /home/work sh -c 'ls /etc'
+if [ "$CAGED" = 1 ]; then
+    etc_listing="$(printf '%s' "$LAST_CHILD_STDOUT" | tr '\n' ' ')"
+    printf '[CAGED] %-45s %s\n' "G.2b: ls /etc" "$etc_listing"
+    case "$(printf '%s' "$etc_listing" | tr -d ' ')" in
+        alternatives)
+            echo "     the cage's /etc holds exactly the alternatives bind, nothing of the host's" ;;
+        *)
+            echo "     [FAIL] the cage's /etc is not exactly [alternatives]: $etc_listing"
+            FAILS=$((FAILS+1)) ;;
+    esac
+    for forbidden in passwd shadow hostname fstab xdg; do
+        printf '%s' "$etc_listing" | grep -qx "$forbidden" \
+            && { echo "     [FAIL] the host's /etc/$forbidden is reachable inside the cage"; FAILS=$((FAILS+1)); }
+    done
 fi
 hole_line G.3 /home/work sh -c 'cat /etc/passwd | head -1'
 if [ "$CAGED" = 1 ]; then

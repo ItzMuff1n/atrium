@@ -113,8 +113,10 @@ It is **not** met by `/proc/self/mountinfo`, which reports the mount table — t
 root's host path and the backing device — inside the cage. Measured, with only
 `/proc/self/mountinfo` and `/proc/1/mountinfo` affected (`/proc/mounts` and
 `/proc/self/maps` are clean). Closing that needs the root to be the root of its own
-mount rather than a subdirectory of one; recorded in
-`docs/archive/attack-list-2e-blind.md`.
+mount rather than a subdirectory of one. **Muffin's decision, 26 Sep 2026: the real
+fix is parked, the documentation is corrected** — filed as **#96**, `parked`, with the
+three candidate fixes and why each was not taken. Recorded in
+`docs/archive/attack-list-2e-blind.md` and `docs/DECISIONS.md`.
 
 The runner's **own** sentences never name a real path. Resolver rejections are
 re-worded from the resolver's structured error fields — the same pattern
@@ -160,24 +162,48 @@ No external crate. `std` only otherwise. The reason this is not the dependency
   keeps its own state.** Nothing separates sandbox content from app files. Needs
   deciding before anything durable lives in the root (Phase 2c is first exposed).
 
-### Phase 2e — three limits the cage introduces, measured not guessed
+### Phase 2e — the limits the cage introduces, measured not guessed
 
-- **A tool routed through `/etc/alternatives` does not work inside the cage.** The
-  cage binds `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` read-only and nothing else,
-  and on a Debian-family host the standard tool symlinks are routed through
-  `/etc/alternatives`, which is therefore absent inside. Measured on the GitHub
-  runner 26 Sep 2026: `awk` fails inside the cage there, while on a host where the
-  link is relative (`awk -> gawk`, staying within `/usr`) it works. The v1 rule is
-  "no host access", so this is the design meeting a real host rather than a bug —
-  but a command relying on that indirection will fail, and `hand-test-2e.sh` says so
-  out loud rather than skipping quietly. Worth a decision: bind `/etc/alternatives`
-  read-only, or accept it.
+- **SOLVED 26 Sep 2026 — a tool routed through `/etc/alternatives` now works.**
+  Was: the cage bound only `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64`, and on a
+  Debian-family host the standard tool names are symlinks routed through
+  `/etc/alternatives`, so a caged command could not resolve a bare `awk` at all.
+  **Muffin's decision (issue #91, 26 Sep 2026): bind it read-only — it is system
+  routing configuration, like `/usr`, not host user data.** Measured after:
+  `/etc/alternatives` is present inside the cage, **read-only** (a write there is
+  refused and nothing appears at the host's copy), a tool routed through it works
+  **by bare name**, and a routed entry resolves end to end
+  (`/etc/alternatives/alt-java -> /usr/lib/jvm/java-25-openjdk/bin/alt-java`).
+  The bind is **conditional on the directory existing**, because bubblewrap refuses
+  to start at all on a missing bind source — measured
+  (`bwrap: Can't find source path …`). Where the host has no such directory, nothing
+  is routed through it, so "not bound" already means "not there".
+- **The new limit that comes with it, measured rather than assumed.**
+  `/etc/alternatives` holds **two kinds of entry**: tool links pointing into `/usr`
+  (bound, and they work — see above) and **config pointers** pointing elsewhere under
+  `/etc`, such as `akonadiserverrc -> /etc/xdg/akonadi/akonadiserverrc.mysql`. Binding
+  the **directory** does not bind its **targets elsewhere**, so those do not resolve
+  inside the cage. That is the honest boundary of this fix and it is printed by the
+  harness, not hidden. `/etc/passwd`, `/etc/shadow` and `/etc/xdg` remain unreachable.
+- **The cage creates empty mount-point stubs inside the environment root on the
+  host.** Measured: one `run` against a fresh root leaves `bin dev etc home lib lib64
+  proc sbin tmp usr` — zero-entry directories (and an empty `etc/alternatives`), which
+  are the mount points bubblewrap needs. This is **pre-existing 2e behaviour, not new**:
+  a build of `main`'s cage produces the same set minus `etc`. Consequence worth naming:
+  **a stubbed mount point shadows nothing and gives no access, but it does mean the root
+  gains entries the agent did not create** — which matters to anything that walks the
+  root as a record of the sandbox's contents, snapshots (2c) and the watcher (2d)
+  included. The stubs are not visible *inside* the cage as anything but the real bound
+  directories.
 - **A command killed by a signal is reported as an exit code, not a signal.** The
   cage program waits for the command and reports its status in shell encoding,
   normalising it: measured, `kill -9 $$` and `exit 137` both come back as `137`, so
   the distinction §C.6 exists to preserve is destroyed before atrium sees it. This
   applies **only** to a caged run; the uncaged runner still reports `signal 9`.
   `timed-out` is unaffected: it means this runner's own timer fired.
+  **ACCEPTED by Muffin, 26 Sep 2026 (issue #91, decision 3)** — recorded in
+  `DECISIONS.md`; `docs/archive/attack-list-2b.md`'s C.6 line still asserts the
+  uncaged behaviour and was deliberately **not** edited, being 2b's frozen record.
 - **There is no resource limit.** `ulimit -u`, `-n` and `-v` inside are the host's
   own values and the run is in no cgroup of its own, so a command that forks or
   allocates without bound can exhaust the machine while staying inside its root.
@@ -187,7 +213,6 @@ No external crate. `std` only otherwise. The reason this is not the dependency
 The real path is **not** disclosed by `pwd` — that is what the cage is for, and 2b's
 README asked for it. It IS still disclosed by `/proc/self/mountinfo`, which reports
 the mount table including the root's host path and the backing device (measured;
-`/proc/mounts` and `/proc/self/maps` do not). Filed with a real fix as issue #88's
-follow-up and recorded in `docs/archive/attack-list-2e-blind.md`; closing it properly
-means making the environment root the root of its own mount rather than a
-subdirectory of one.
+`/proc/mounts` and `/proc/self/maps` do not). **Muffin's decision, 26 Sep 2026: the
+real fix is parked and the documentation is corrected** — filed as **#96**, `parked`,
+with the three candidate fixes and why each was not taken.

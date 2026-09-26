@@ -386,32 +386,119 @@ if [ "$CAGED" = 1 ]; then
         || bad "[C.3] git did not run: $(child_stdout "$LAST_OUT" | head -1)"
 fi
 
-# C.4: pipelines, and one real text-processing program. The program is resolved on
-# the HOST first and then named by its REAL path, because `/etc/alternatives` is
-# outside what the cage binds: on Debian-family hosts `awk` is a symlink routed
-# through it, so a caged command cannot resolve a bare `awk` at all. Measured on the
-# GitHub runner 26 Sep 2026 (C.4 failed there while passing on a host whose
-# `awk -> gawk` is relative and stays inside /usr). This is the v1 "no host access"
-# design meeting a host that routes tools through /etc — a KNOWN LIMIT, recorded in
-# the shell README, not a pass.
-AWK_BIN="$(readlink -f "$(command -v awk 2>/dev/null)" 2>/dev/null || echo '')"
-case "$AWK_BIN" in
-    /usr/*) C4_PROG="$AWK_BIN 'BEGIN{print 3*4}'" ;;
-    *)      C4_PROG="echo AWK-UNREACHABLE-INSIDE-CAGE" ;;
-esac
-caged_line C.4 /home/work sh -c "printf 'a\nb\n' | wc -l; $C4_PROG"
+# C.4: pipelines, and a real text-processing program.
+#
+# CHANGED 26 Sep 2026 (Muffin's decision on issue #91, closing #93). Until this,
+# `/etc/alternatives` was NOT bound, so on Debian-family hosts a bare `awk` could
+# not be resolved inside the cage at all and this line SKIPPED the text tool rather
+# than testing it, resolving awk on the host first to avoid depending on the host's
+# tool layout. The directory is now bound READ-ONLY, so a bare `awk` must work
+# inside the cage on every host, and the skip is gone -- it would now mask a
+# regression rather than record a limit.
+#
+# `awk` is invoked by its BARE NAME deliberately: naming it by its resolved real
+# path is exactly the workaround this change removes.
+#
+# MEASURED CAVEAT, so this line is not over-read: awk by bare name alone does NOT
+# prove the alternatives bind on every host. On the developer machine `awk -> gawk`
+# is a plain relative symlink inside /usr, so it resolves with or without the bind —
+# observed: with the bind switched off, C.4 still passed while C.13/C.14/C.16 failed.
+# On the Debian-family runner it is routed and does test it. The line that tests the
+# bind on every host is C.16, which picks an entry the host actually routes; C.4 is
+# kept because it is the line that failed on the runner and started this.
+caged_line C.4 /home/work sh -c "printf 'a\nb\n' | wc -l; awk 'BEGIN{print 3*4}'"
 if [ "$CAGED" = 1 ]; then
     printed="$(child_stdout "$LAST_OUT" | tr -d ' \n')"
-    case "$AWK_BIN" in
-        /usr/*)
-            [ "$printed" = "212" ] \
-                && ok "[C.4] pipelines and a real program still run (2 then 12)" \
-                || bad "[C.4] expected 2 then 12, got: $printed" ;;
-        *)
-            [ "$printed" = "2AWK-UNREACHABLE-INSIDE-CAGE" ] \
-                && ok "[C.4] the pipeline works (2); the text tool is SKIPPED: on this host awk is $AWK_BIN, which is outside the paths the cage binds (/usr /bin /sbin /lib /lib64)" \
-                || bad "[C.4] pipeline: got $printed" ;;
+    [ "$printed" = "212" ] \
+        && ok "[C.4] pipelines and a real program still run (2 then 12, awk by bare name)" \
+        || bad "[C.4] expected 2 then 12, got: $printed"
+fi
+
+# C.5: the /etc/alternatives bind itself (issue #93, Muffin's decision 26 Sep 2026).
+# Three separate things must hold, and each is its own line because a single "it
+# works" would not say which of them broke:
+#   (a) the directory is reachable inside the cage;
+#   (b) it is READ-ONLY -- writing there must fail, and must not reach the host;
+#   (c) a ROUTED entry actually resolves through it to a real file, i.e. the bind
+#       gives working routing and not merely a visible directory name.
+caged_line C.5 /home/work sh -c 'ls -d /etc/alternatives 2>&1'
+if [ "$CAGED" = 1 ]; then
+    child_stdout "$LAST_OUT" | grep -qx '/etc/alternatives' \
+        && ok "[C.5] /etc/alternatives is present inside the cage" \
+        || bad "[C.5] /etc/alternatives is NOT reachable inside the cage: $(child_stdout "$LAST_OUT" | head -1)"
+fi
+
+caged_line C.6 /home/work sh -c 'touch /etc/alternatives/evil 2>&1; echo rc=$?; mkdir /etc/alternatives/evil-dir 2>&1; echo rc=$?'
+if [ "$CAGED" = 1 ]; then
+    out="$(child_stdout "$LAST_OUT")"
+    printf '%s' "$out" | grep -q 'Read-only file system' \
+        && ok "[C.5] /etc/alternatives is READ-ONLY (a write there is refused)" \
+        || bad "[C.5] /etc/alternatives was writable inside the cage -- it must be read-only"
+    if [ -e /etc/alternatives/evil ] || [ -e /etc/alternatives/evil-dir ]; then
+        bad "[C.5] !! A WRITE THROUGH /etc/alternatives REACHED THE HOST"
+    else
+        ok "[C.5] nothing written inside appeared at the host's /etc/alternatives"
+    fi
+fi
+
+# (c) a routed entry, resolved end to end.
+#
+# TWO KINDS OF ENTRY LIVE IN /etc/alternatives, and only one of them can work.
+# Measured 26 Sep 2026 on this host: of 70 entries, the tool links point into
+# /usr (bound, so they resolve) while others point at CONFIG FILES outside it --
+# e.g. `akonadiserverrc -> /etc/xdg/akonadi/akonadiserverrc.mysql`. Binding
+# /etc/alternatives does NOT make those resolve, because the DIRECTORY is bound
+# and its targets elsewhere under /etc are not. That is recorded as a limit
+# rather than papered over, and it is why this line selects an entry whose target
+# is inside the bound set instead of taking the first name it finds.
+#
+# The selection is by the HOST's own resolution, so it cannot go stale on a host
+# that names its entries differently; if no entry points into the bound set, that
+# is a finding, not a skip.
+ROUTED=""
+for e in $(ls /etc/alternatives 2>/dev/null); do
+    t="$(readlink -f "/etc/alternatives/$e" 2>/dev/null || echo '')"
+    case "$t" in
+        /usr/*|/bin/*|/sbin/*|/lib/*|/lib64/*) ROUTED="$e"; ROUTED_TARGET="$t"; break ;;
     esac
+done
+if [ -n "$ROUTED" ]; then
+    caged_line C.7 /home/work sh -c "readlink -f /etc/alternatives/$ROUTED 2>&1"
+    if [ "$CAGED" = 1 ]; then
+        got="$(child_stdout "$LAST_OUT" | head -1)"
+        if [ "$got" = "$ROUTED_TARGET" ]; then
+            ok "[C.5] a routed entry resolves end to end: /etc/alternatives/$ROUTED -> $ROUTED_TARGET"
+        else
+            bad "[C.5] /etc/alternatives/$ROUTED resolved to '$got' inside the cage, host says '$ROUTED_TARGET'"
+        fi
+    fi
+else
+    bad "[C.5] no entry in /etc/alternatives points into the bound set (/usr /bin /sbin /lib /lib64), so tool routing cannot be demonstrated on this host"
+fi
+
+# (d) the config-pointer limitation, measured rather than asserted. An entry whose
+# target is outside the bound set must NOT resolve, and that is the honest boundary
+# of this fix: the alternatives DIRECTORY is bound, its targets elsewhere are not.
+CFGENTRY=""
+for e in $(ls /etc/alternatives 2>/dev/null); do
+    t="$(readlink -f "/etc/alternatives/$e" 2>/dev/null || echo '')"
+    case "$t" in
+        ''|/usr/*|/bin/*|/sbin/*|/lib/*|/lib64/*) ;;
+        *) CFGENTRY="$e"; CFGENTRY_TARGET="$t"; break ;;
+    esac
+done
+if [ -n "$CFGENTRY" ]; then
+    caged_line C.8 /home/work sh -c "readlink -f /etc/alternatives/$CFGENTRY 2>&1; echo rc=\$?"
+    if [ "$CAGED" = 1 ]; then
+        got="$(child_stdout "$LAST_OUT" | head -1)"
+        if [ "$got" = "$CFGENTRY_TARGET" ]; then
+            ok "[C.5] a config-pointer entry also resolves ($CFGENTRY -> $CFGENTRY_TARGET)"
+        else
+            note "[C.5] KNOWN LIMIT, measured: /etc/alternatives/$CFGENTRY points outside the bound set ($CFGENTRY_TARGET) and does not resolve inside the cage — binding the directory does not bind its targets elsewhere under /etc"
+        fi
+    fi
+else
+    note "[C.5] this host has no /etc/alternatives entry pointing outside the bound set"
 fi
 
 # ===========================================================================

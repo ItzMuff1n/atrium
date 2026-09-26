@@ -227,6 +227,11 @@ the requirement; it is a different failure.
 | C.10 | the runner's time limit still applies inside the cage (`sleep` past it) | NOT BROKEN — reported as a timeout, not as exit 0, and not as a hang |
 | C.11 | a survivor: `sh -c '(sleep 30) & echo started'` | NOT BROKEN *and not leaked* — the run returns promptly; no `sleep 30` is left running on the host after the runner reports. This is 2b §N.8's reader-grace problem in its new form |
 | C.12 | `pwd` inside the cage equals `/` when the cwd was `/`, and the virtual path the agent asked for, not a real host path | NOT BROKEN — the virtual-path contract survives the cage |
+| C.13 | **`/etc/alternatives` is reachable inside the cage** — `ls -d /etc/alternatives` | NOT BROKEN — present. *Added 26 Sep 2026 at Muffin's decision on issue #91, closing #93: the directory is now bound read-only.* Before this, a Debian-family host could not resolve a bare tool name at all |
+| C.14 | **`/etc/alternatives` is READ-ONLY** — `touch /etc/alternatives/evil`, `mkdir /etc/alternatives/evil-dir` | CAGED — both fail with a read-only error, **and nothing appears at the real `/etc/alternatives` on the host**. Same shape as G.2 for `/usr` |
+| C.15 | **a tool routed through `/etc/alternatives` works by its bare name** — `awk 'BEGIN{print 3*4}'` and `printf 'a\nb\n' \| wc -l` | NOT BROKEN — `12` and `2`. This is the sharp form of C.13: a visible directory name proves nothing, a working route proves the bind does its job. Invoked by **bare name** deliberately — naming `awk` by its resolved real path is the workaround this change removes, and would pass even against a cage that does not bind the directory |
+| C.16 | **a routed entry resolves end to end** — `readlink -f /etc/alternatives/<an entry whose target is inside the bound set>` | NOT BROKEN — the same target the host resolves. The entry is chosen by the host's own resolution, so it cannot go stale on a host that names its entries differently |
+| C.17 | **a config-pointer entry does NOT resolve** — `readlink -f /etc/alternatives/<an entry whose target is outside the bound set>` | CAGED — the target is unreachable. *Recorded as the honest boundary of this fix, measured 26 Sep 2026.* `/etc/alternatives` holds **two kinds** of entry: tool links pointing into `/usr` (bound, so they work) and config pointers such as `akonadiserverrc -> /etc/xdg/akonadi/akonadiserverrc.mysql`. Binding the **directory** does not bind its **targets elsewhere under `/etc`**. A line asserting "every alternatives entry resolves" would fail against a correct cage and push the implementation toward binding more of `/etc` than the decision covers |
 
 ---
 
@@ -327,7 +332,7 @@ the cage.
 | G.3 | `/home` exists and contains exactly the root's own contents | CAGED — `/home` is **inside** the root, so it must be present and hold the root's `home/work`. Its **host** counterpart is what must not be reachable |
 | G.4 | `/home/muffin` — the host's real home path | CAGED — **absent**. This is the sharp form of "`/home` must not exist" and the line that actually matters |
 | G.5 | `/root`, `/var`, `/opt`, `/srv`, `/boot`, `/media`, `/mnt` | CAGED — none exists inside the cage (nothing binds them) |
-| G.6 | `/etc` | CAGED — absent, or the root's own `etc` only; never the host's |
+| G.6 | `/etc` | CAGED — the root's own `etc` only, never the host's, **with one named exception added 26 Sep 2026**: `/etc/alternatives` is bound read-only at Muffin's decision on issue #91 (system routing configuration, like `/usr`, not host user data). See C.13–C.17. Everything else under the host's `/etc` stays absent — `/etc/passwd`, `/etc/shadow` and `/etc/xdg` are all still unreachable, which is what B.1–B.2 and C.17 check |
 | G.7 | `/tmp` inside the cage | CAGED — if present it is the cage's own private one, and a file written there does **not** appear in the host's `/tmp` |
 | G.8 | `/dev` | CAGED — a fresh minimal `/dev`; no host device is reachable through it |
 | G.9 | `/proc` | CAGED — a private proc: `ps -e` shows only the cage's own processes (measured: ~5 lines) |

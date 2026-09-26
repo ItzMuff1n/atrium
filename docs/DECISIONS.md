@@ -1414,7 +1414,7 @@ Note the correction to an earlier reading in this phase: `TMPDIR` **is** 2b's
 requirement. `hand-test-2b.sh` D.2 lists it among the permitted names and D.5 writes
 to it. Adding it to 2e's allowlist was not optional.
 
-### 3. A caged command's death signal is not recoverable (C.6)
+### 3. A caged command's death signal is not recoverable (C.6) — ACCEPTED, 26 Sep 2026
 
 Measured 26 Sep 2026: the cage program reports the child's status in shell encoding
 and **normalises** it — `kill -9 $$` and `exit 137` both come back identically as
@@ -1422,6 +1422,37 @@ and **normalises** it — `kill -9 $$` and `exit 137` both come back identically
 satisfied: the information is destroyed before atrium sees it. This is a **limit of
 the phase**, recorded in `crates/shell/README.md`, not a claim of compliance.
 
-What is still guaranteed, and tested: `timed-out` means our own timer fired and
+**Muffin's decision, 26 Sep 2026 (issue #91, decision 3): accept it, record it here,
+and update 2b's §C.6 expectation for caged runs.** So it is no longer an open item —
+it is accepted, and the record is these three places together:
+
+- this section;
+- `crates/shell/README.md`, under the measured limits;
+- `crates/shell/hand-test-2b.sh` §C.6, which is **dual-mode and was already
+  caged-aware**: against a caged binary it asserts `status=exit 137`, and against an
+  uncaged one it still asserts `status=signal 9`. The harness probes which binary it
+  has rather than assuming, so 2b's original evidence stays valid for an uncaged
+  runner and the caged expectation is not a silent overwrite of it.
+
+**One thing that is NOT done, and would be a false claim of completeness:**
+`docs/archive/attack-list-2b.md` is **2b's frozen record and has not been edited.**
+Its line C.6 still reads, in the present tense:
+
+> `sh -c 'kill -9 $$'` must be reported as killed by signal 9, distinctly from any
+> exit code.
+
+That sentence is **no longer true of a caged run**, and it is left as written
+deliberately rather than quietly rewritten. Two reasons, and the second is the
+important one:
+
+1. 2b is signed off and its attack list is the evidence that was signed off. Editing
+   the assertion a signed-off phase was judged against rewrites history, which is the
+   one thing `AGENT-RULES.md` §10 is built to prevent.
+2. A frozen list that has been overtaken is **supposed to look overtaken**. The
+   supersession is recorded here and in the harness's own comments, so a reader who
+   finds C.6's sentence is one hop from the ruling that replaced it. Silently fixing
+   the list would make an accepted regression invisible.
+
+**What is still guaranteed, and tested:** `timed-out` means our own timer fired and
 nothing else does, and a command that ends on its own keeps its own exit code. 2b's
 uncaged behaviour is unchanged, and the line is dual-mode.
