@@ -139,10 +139,16 @@ not stop for it.
 does. Comment the reason, add the **`parked`** label, set the board card to
 **Parked**, and **continue**. The label is what makes parking mechanical rather
 than prose — the goal gate (§11) reads it. A parked task is not a finished task,
-and the report (§10) lists every one.
+and the report (§9) lists every one.
 
-Also park, unchanged: a task needing files outside scope, failing CI **three**
-times, or needing a messy workaround.
+Also park, unchanged: a task needing files outside scope, or needing a messy
+workaround.
+
+**If CI has failed three times, or two review rounds have not settled it, that is
+circling (§3b), not an immediate park.** Take the one rescue child, try once more
+yourself, and park it if it still has not held. `AGENT-RULES.md` §5 lists the park
+triggers in full, in the three groups — decide yourself, park at once, or write it
+out first.
 
 **Always parked, never decided alone mid-run:**
 
@@ -256,11 +262,16 @@ is mandatory in the entry itself.
 A goal is run as a Hermes **`/goal`**, so the loop keeps working across turns without
 Muffin re-prompting. Two things about that are worth writing down.
 
-**The goal text.** Set it with `/goal`, naming the milestone and the goal issue, and
-say explicitly that the goal issue is re-read at the start of every task:
+**The goal text.** The start lines are fixed — the same two every time, so Muffin can
+type them from memory (`goal-runner` Phase 1). They name the active-goal file rather
+than the milestone and the goal issue, because `~/.hermes/goals/active.json` carries
+`milestone`, `goal_issue`, `repo` and `spend_limit`, and `goal-runner` Phase 2
+re-reads both the file and the goal issue at the start of every task. That pair is what
+survives compaction:
 
 ```
 /goal Finish the active goal (goal-runner skill, ~/.hermes/goals/active.json).
+/goal gate add "bash ~/.hermes/skills/autonomous-ai-agents/goal-runner/scripts/gate.sh"
 ```
 
 **The quality gate.** Hermes runs a goal's quality gates at **every turn
@@ -280,11 +291,16 @@ exactly three reasons:
 | exit | meaning |
 |---|---|
 | **0** | all clear — including "the goal is simply not finished yet" |
-| **1** | **premature finish**: a goal issue exists while the milestone still has open issues not labelled `parked` |
+| **1** | **premature finish**: the closing issue titled `Your turn: <milestone>` is open while the milestone still has open issues not labelled `parked`. **Dormant since 27 Sep 2026** — see below |
 | **2** | **`main` is red**: the required `check` workflow failed on main's current commit |
 | **3** | bad usage (missing/unknown milestone) |
 | **4** | **over budget** — only reachable when a `--spend-limit` was given |
 | **5** | (wrapper only) no readable `~/.hermes/goals/active.json` — fails **closed** |
+
+Exits 1 and 2 are what the gate exists for; exit 4 is what makes the budget a real
+stop. The closing issue is excluded from the "still open" count, because it is open by
+definition while the gate is asking the question — counting it would make "everything
+else is parked" unsatisfiable.
 
 Parking (§6) is what makes exit 1 mechanical: the label is the difference between
 "still being worked" and "deliberately not", and a goal whose only remaining work

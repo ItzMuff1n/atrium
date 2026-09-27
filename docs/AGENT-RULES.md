@@ -59,8 +59,8 @@ Every report separates:
 Never write "fixed", "works", or "done" for something you did not execute.
 
 When you hit an error, **paste the error verbatim**. Do not summarise it. Do not
-paraphrase it. The user relays your output to another model that needs the exact
-text.
+paraphrase it. The exact text is what makes a diagnosis possible, and the exact text
+is what goes in the goal report.
 
 If you claim a phase is complete, list exactly what the user should do to verify
 it themselves. Do not verify it for them.
@@ -107,22 +107,36 @@ card, add the **`parked`** label, move the card to **Parked** on the board, and 
 on with the next card. Never build a workaround to avoid the question, and never
 answer it yourself to keep moving.
 
-**Always parked, never decided alone mid-run** — no exception, however small the
-change looks:
+Which of the triggers above is which, now that nothing stops the run:
+
+**Decide it yourself and record why on the goal issue** — not a stop and not a park:
+
+- **adding a dependency**, or picking between two implementations. `TOPICS.md` §6 is
+  explicit that these are the Lead's own call. Record the choice and the reason.
+
+**Parked immediately, every time, never decided alone** — no exception, however small
+the change looks:
 
 - weakening a gate, guard, test, permission or lock;
 - changing `DECISIONS.md`;
 - touching the sandbox path resolver (`DESIGN.md` §3.2) outside the phase that
   builds it;
+- the design document not covering the case you have hit, or following it clearly
+  producing something that does not work — both are design gaps, and a rescue child
+  (§8) cannot close them;
 - anything the user must see, touch or pay for.
 
-Parking is not a loss: every parked card reaches Claude in the goal report
-(`TOPICS.md` §9) with what it needs. Deciding one of the above alone is the loss —
-it puts a weakened guard or a changed decision in a merged commit with nobody's
-name on it.
+**Write it out first, then park if that does not settle it:**
 
-Adding a dependency, or picking between two implementations, is **your** call:
-decide, and record why on the goal issue.
+- **you have tried the same fix twice and it has not held.** That is the state §8 and
+  `TOPICS.md` §3b call circling: write out what you did, what you saw, what you
+  believe and what you are unsure about, take **one rescue child**, try once more
+  yourself, and **park it if it still has not held**. One rescue per card, ever.
+
+Parking is not a loss: every parked card reaches Claude in the goal report
+(`TOPICS.md` §9) with what it needs. Deciding a never-decided-alone item alone is the
+loss — it puts a weakened guard or a changed decision in a merged commit with nobody's
+name on it.
 
 ---
 
