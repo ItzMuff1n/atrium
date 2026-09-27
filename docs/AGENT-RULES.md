@@ -33,7 +33,7 @@ Consequences you must internalise:
 | `STATUS.md` | What is verified vs merely claimed. **You may only append.** |
 | `OPEN-QUESTIONS.md` | Genuinely undecided items. |
 | `AGENT-RULES.md` | This file. |
-| `TOPICS.md` | The topic routine: plan first, the Lead/builder split, spend, parking, close. |
+| `TOPICS.md` | The goal routine: one batch of questions, the Lead/builder split, spend, parking, the report for Claude. |
 
 **If code and `DESIGN.md` disagree, stop and say so.** Do not silently
 "fix" either one. One of them is wrong and the user decides which.
@@ -84,7 +84,7 @@ point.
 
 ---
 
-## 5. Stop and ask
+## 5. Stop and ask — and, during a goal, park instead
 
 **Stop and ask the user** when any of these are true:
 
@@ -99,6 +99,30 @@ point.
 - You have tried the same fix twice and it has not held.
 
 **Asking is cheap. A wrong assumption in a codebase nobody reads is not.**
+
+**Changed 27 Sep 2026 — during a goal, "stop and ask" means "park and continue".**
+A goal is run alone from one batch of questions to the end (`TOPICS.md` §1, §6), so
+the run does not stop to ask. Write the question out **in full** as a comment on the
+card, add the **`parked`** label, move the card to **Parked** on the board, and carry
+on with the next card. Never build a workaround to avoid the question, and never
+answer it yourself to keep moving.
+
+**Always parked, never decided alone mid-run** — no exception, however small the
+change looks:
+
+- weakening a gate, guard, test, permission or lock;
+- changing `DECISIONS.md`;
+- touching the sandbox path resolver (`DESIGN.md` §3.2) outside the phase that
+  builds it;
+- anything the user must see, touch or pay for.
+
+Parking is not a loss: every parked card reaches Claude in the goal report
+(`TOPICS.md` §9) with what it needs. Deciding one of the above alone is the loss —
+it puts a weakened guard or a changed decision in a merged commit with nobody's
+name on it.
+
+Adding a dependency, or picking between two implementations, is **your** call:
+decide, and record why on the goal issue.
 
 ---
 
@@ -209,12 +233,20 @@ explaining.** Write out, in detail:
 - what you believe is happening and why
 - what you are uncertain about
 
-The user will relay that to another model for a second opinion. That is faster
-and cheaper than a third attempt.
+**The second opinion is one rescue child.** `delegate_task` a **report-only recon
+child** with all of the above in the brief, plus the rules, the relevant files'
+content and the card. It returns a **diagnosis and a suggested fix, changing
+nothing** — it never writes product code, never pushes, never opens a PR. Judge it by
+its live transcript and its `exit_reason`, never by its summary (`AGENT-RULES.md` §6).
+Then try once more yourself. **One rescue per card, ever** (`TOPICS.md` §3b); a card
+that needs a second one is parked, not rescued again.
+
+**Changed 27 Sep 2026.** This used to be "the user will relay that to another model":
+he does not relay anything now, and the relay is gone.
 
 **Do not oscillate.** If a fix for problem A causes problem B, and the fix for B
 brings back A, you have misunderstood the underlying cause. Say so instead of
-alternating.
+alternating — and that is exactly the state §3b defines as circling.
 
 ---
 
