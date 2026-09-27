@@ -38,12 +38,26 @@ and is no longer blocked by 2e.** Read `BUILD-PLAN.md` §5 — and note the fetc
 tool item added to it on 26 Sep 2026: it is the agent's only route to the network, it
 runs outside the cage, and every successful call records a `fetched` effect.
 
-**The three limits 2e knowingly leaves open** (all recorded in `crates/shell/README.md`
-and in the sign-off entry): a tool routed through `/etc/alternatives` does not work
-inside the cage on Debian-family hosts; `/proc/self/mountinfo` still discloses the
-root's host path and backing device; a caged command's death signal is normalised, so
-`signal` and `exit 137` are indistinguishable. Plus **#89** (no resource limits, so a
-command can exhaust the host). None of these gates Phase 5.
+**The two limits 2e knowingly leaves open** (both recorded in `crates/shell/README.md`
+and in the sign-off entry): `/proc/self/mountinfo` still discloses the root's host path
+and backing device; a caged command's death signal is normalised, so `signal` and
+`exit 137` are indistinguishable. Plus **#89** (no resource limits, so a command can
+exhaust the host). None of these gates Phase 5.
+
+**A third limit was on this list until 26 Sep 2026 and is now closed.** 2e originally
+recorded that a tool routed through `/etc/alternatives` does not work inside the cage on
+Debian-family hosts, and Muffin's decision then was to accept and park it (issue #93).
+He reversed that on 26 Sep 2026 (issue #91, decision 1): it is **system routing
+configuration, like `/usr`, not host user data**, so the cage binds it **read-only**.
+Done in **PR #97** (merged `8eefc6c`; harness `hand-test-2e.sh`, **40 lines, 0 failures,
+36 cage lines measured**), which also closed #93. The bind is **conditional** — bubblewrap refuses to start on a missing
+`--ro-bind` source, so an unconditional bind would have refused every command on hosts
+without the directory; skipped, "not bound" already means "not there". The lines that
+prove it, quoted from that PR: `[ok  ] [C.4] pipelines and a real program still run
+(2 then 12, awk by bare name)`, `[ok  ] [C.5] /etc/alternatives is READ-ONLY (a write
+there is refused)`, and `[ok  ] [C.5] nothing written inside appeared at the host's
+/etc/alternatives`. **This is the correction of a stale entry, not a new claim** — the
+`awk` finding itself stands in the 26 Sep 2026 entries below, where it is history.
 
 **Phase 2d — the filesystem watcher. VERIFIED HANDS-ON by Muffin, 25 Sep
 2026. Signed off.** The crate is `crates/watcher/` (binary `atrium-watcher`). It sits
@@ -78,9 +92,10 @@ approved the evidence (PR #90, CI green on `2ab8078`; merged `6fece66`) and did 
 re-run the script, per the rule changed 25 Sep 2026. See "Verified hands-on" for what
 he approved. **36 lines, 0 failures, 32 cage lines measured**; 2b's five deliberate
 `HOLE` lines are closed by the same cage in the same job. **Phase 5 (the agent loop) is
-no longer blocked by 2e.** Three limits 2e knowingly does not close — the
-`/etc/alternatives` gap, the `/proc/self/mountinfo` disclosure, and the normalised
-death signal — plus the absent resource limits (#89); none of them gates Phase 5.
+no longer blocked by 2e.** Two limits 2e knowingly does not close — the
+`/proc/self/mountinfo` disclosure and the normalised death signal — plus the absent
+resource limits (#89); none of them gates Phase 5. (A third, the `/etc/alternatives`
+gap, was closed by PR #97 on 26 Sep 2026; see "Current phase" above.)
 
 **Next: Phase 5 — the agent loop, now unblocked.** See `BUILD-PLAN.md` §5. Note the
 fetch/search tool item added to it on 26 Sep 2026: it is the agent's only route to the
@@ -2292,6 +2307,12 @@ Neither was ever a blocker for Phase 1 sign-off.
 
 ## Notes for the next session
 
+- **Read "Current phase" first, and treat it as the only statement of where the project
+  is.** The dated entries below it are history: where one of them describes a limit
+  that has since been closed, "Current phase" is what is true. Two of those limits are
+  closed — `/etc/alternatives` (PR #97) and 2b's five `HOLE` lines — and several dated
+  entries still describe them as open because that is what was true when they were
+  written. Do not "fix" a dated entry; append a correction.
 - `DESIGN.md`, `DECISIONS.md`, `BUILD-PLAN.md`, `AGENT-RULES.md` and
   `OPEN-QUESTIONS.md` are complete and current as of the design session that
   produced them.
@@ -2320,9 +2341,10 @@ Neither was ever a blocker for Phase 1 sign-off.
   demanded the opposite. That hole is now closed: inside a caged command's own view,
   outside the environment root does not exist. See the 2e entry under "Verified
   hands-on", `DECISIONS.md`, and `BUILD-PLAN.md` §2e. **Phase 5 (the agent loop) is
-  unblocked.** The three limits 2e knowingly does not close — `/etc/alternatives`, the
-  `/proc/self/mountinfo` disclosure, the normalised death signal — plus the absent
-  resource limits (#89) are recorded; none gates Phase 5.
+  unblocked.** The limits 2e knowingly does not close — the `/proc/self/mountinfo`
+  disclosure and the normalised death signal — plus the absent resource limits (#89)
+  are recorded; none gates Phase 5. **The `/etc/alternatives` gap was closed by PR #97
+  on 26 Sep 2026** and is no longer one of them.
 - Phase 2's parts all route through the Phase 1b resolver, which is signed off.
 - Phase 0 is throwaway spike code. Do not build architecture in it.
 - Phase 0b is a stop-and-rethink gate: if the Rust MCP SDK fails badly, the
