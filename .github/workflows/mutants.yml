@@ -247,7 +247,7 @@ jobs:
       # which is how the script tells the shards apart and notices a shard that
       # produced nothing.
       - name: Download every shard's results
-        uses: actions/download-artifact@v8.0.1
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: mutants-shard-*
           path: mutants-results
