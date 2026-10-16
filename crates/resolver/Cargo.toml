@@ -23,7 +23,7 @@ edition = "2021"
 [dev-dependencies]
 # Property-based testing: generates random inputs and shrinks failures to a
 # minimal case. https://github.com/proptest-rs/proptest
-proptest = "=1.11.0"
+proptest = "=1.12.0"
 
 
 [lib]
