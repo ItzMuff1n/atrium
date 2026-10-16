@@ -218,7 +218,7 @@ jobs:
       # second failure about a missing artifact.
       - name: Upload this shard's results
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: mutants-shard-${{ matrix.shard }}
           path: |
@@ -295,7 +295,7 @@ jobs:
       # even when filing the issue failed.
       - name: Upload the collected findings
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: mutants-report
           path: |
