@@ -266,7 +266,7 @@ jobs:
       # noisier failure that buries the first.
       - name: Upload the crash artifacts
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-crash-${{ github.run_number }}
           path: fuzz/artifacts/resolve/
@@ -280,7 +280,7 @@ jobs:
       # The log, which carries the panic message and the input in printable form.
       - name: Upload the run log
         if: always()
-        uses: actions/upload-artifact@v7.0.1
+        uses: actions/upload-artifact@v7.0.2
         with:
           name: fuzz-log-${{ github.run_number }}
           path: fuzz-run.log
